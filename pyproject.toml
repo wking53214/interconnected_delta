@@ -1,0 +1,22 @@
+[project]
+name = "delta"
+version = "0.1.0"
+description = "Records beta.Decisions in a hash-chained ledger, tracks outcome obligations, and feeds resolved outcomes into cohort-level fairness screening."
+requires-python = ">=3.9"
+dependencies = [
+    "zeta @ git+https://github.com/wking53214/interconnected_zeta",
+    "beta @ git+https://github.com/wking53214/interconnected_beta",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["delta"]
