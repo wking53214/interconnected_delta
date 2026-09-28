@@ -1,113 +1,96 @@
-# interconnected_delta
+# interconnected_delta (δ)
 
-**Role in the governed action stack:** CUSTODY — record Decisions, track outcome obligations, verify later, fairness-screen cohorts.
+Records `beta.Decision`s in a hash-chained ledger, tracks outcome obligations, screens cohorts for disparate impact. Version `0.1.0`. Depends on ζ and β (git). Python ≥ 3.9.
+
+## 1. Pipeline Position & Role
+
+**CUSTODY** of the extracted spine. Fourth stage.
 
 ```text
-α Alpha (Keys) → ζ Zeta (Locks) → β Beta (Decision) → δ Delta (custody)
+α Alpha (Keys) → ζ Zeta (Locks) → β Beta (Decision) → δ Delta (this repo)
 ```
 
-Part of the composable decision spine. Live orchestrated path: [observe-perceive](https://github.com/wking53214/observe-perceive). Domain ledger/twin runtime: [sentinel_os](https://github.com/wking53214/sentinel_os).
+This is where the real-time decision half (α/ζ/β) meets mature obligation and fairness machinery already present in [`sentinel_os`](https://github.com/wking53214/sentinel_os). Domain-blind production custody remains sentinel_os (Postgres, twin, sealed demographic channel). δ is the in-process extract that can consume a `beta.Decision`.
 
-This is where the real-time decision half (α/ζ/β) meets mature obligation and fairness machinery already present in `sentinel_os`.
+## 2. Full System Scope & Architectural Depth
 
----
-
-Records `beta.Decision`s in a hash-chained ledger, tracks their outcome
-obligations, verifies them when they mature, and feeds resolved outcomes
-into cohort-level fairness screening — the fourth and final stage:
-`alpha` detects Keys, `zeta` evaluates Locks, `beta` decides, `delta`
-records and verifies.
-
-## Why this exists, and why it's different from alpha/zeta/beta
-
-Alpha and zeta extracted patterns that were **duplicated and never
-unified** across the source (Locks reinvented 5 times, a verdict shape
-reinvented 3 times). Delta is a different kind of extraction: the
-target systems here are **already mature, already unified, and already
-correct** — they just never had `beta.Decision` to connect to. Delta's
-job is mostly wiring, not invention.
+Unlike α/ζ/β (unifying duplicated patterns), δ is mostly **wiring of already-correct machinery** that never had `beta.Decision` as an input.
 
 | Module | Provenance |
 |---|---|
-| `ledger.py` | **Extracted.** Generalizes PERCEIVE's `ImmutableAuditLedger` (`perceive_consolidated.py:579-633`) — a real, working genesis + SHA256 chain + recompute-to-verify mechanism — from PERCEIVE's specific entry shape to any `beta.Decision`. |
-| `obligation.py` | **Extracted near-verbatim.** `MaturationRule`, `OutcomeObligation`, and the OPEN → RESOLVED/ABANDONED lifecycle come from `sentinel_os`'s `outcome_v1.py`, already a mature, rigorously validated, domain-blind module (see its own "Provenance Rule": every claim stamped verified/attested/estimated, never a mushy "probably"). Not reinvented — relinked to `Decision.decision_fingerprint` instead of a raw ledger row's hash. |
-| `fairness.py` | **Extracted.** `CohortDecision` and `check_statistical_outcome_equity` come from `sentinel_os`'s `regulatory_checks.py` — a real, working EEOC four-fifths disparate-impact screen (29 CFR 1607.4(D)), already wired to consume resolved obligations. It had just never been fed a real decision before. |
-| `decision_obligations.py` | **New.** The one piece that didn't already exist: a thin adapter (`DecisionObligationTracker`) linking `beta.Decision` to the obligation lifecycle. `outcome_v1.py` worked on generic decision-row dicts, not `beta.Decision` objects — there was no existing adapter to extract. |
+| `ledger.py` | Extracted from PERCEIVE `ImmutableAuditLedger` (`perceive_consolidated.py:579-633`): genesis + SHA-256 chain + recompute-to-verify. Generalized from PERCEIVE's entry shape to any `beta.Decision`. |
+| `obligation.py` | Near-verbatim from sentinel_os `outcome_v1.py`: `MaturationRule`, `OutcomeObligation`, OPEN → RESOLVED / ABANDONED / stay-open. Bound to `Decision.decision_fingerprint` instead of a raw ledger row hash. Provenance rule: claims are verified / attested / estimated — never "probably". |
+| `fairness.py` | Extracted from sentinel_os `regulatory_checks.py`: EEOC four-fifths screen (29 CFR 1607.4(D)). `CohortDecision` + `check_statistical_outcome_equity`. |
+| `decision_obligations.py` | **New.** `DecisionObligationTracker` adapter. `outcome_v1` operated on generic row dicts. |
 
-## What this reveals about the rest of the codebase
+### Ledger
 
-Before this session, `sentinel_os` had a mature judgment-time system
-(`Cassette.judge()` — was this outcome good, scored after the fact) and
-a mature outcome-obligation system (`outcome_v1.py` — track what's owed,
-verify it later, feed fairness testing) — but **no real-time
-decision-time system** connecting to either of them. `alpha/zeta/beta`
-built that missing half. `delta` is where the two halves actually meet.
+- Genesis seed → `chain_head`.
+- Canonical subset of a Decision (ids, timestamp, fingerprint, narrative, trigger names) is hashed; `immutable_hash = SHA-256(chain_head + hash(canonical))`.
+- Verification **recomputes** the chain. Stored hashes are not trusted.
+- In-memory `List[LedgerEntry]`.
 
-## What's NOT solved here
+### Obligations
 
-`group_distribution` (race/ethnicity → probability) is required by
-`to_cohort_decision`/`check_statistical_outcome_equity` and is
-**deliberately not computed by this module** — same domain-blind
-posture as the source, which never guesses who's in which demographic
-group any more than it guesses what counts as "favorable." The
-source's intended input for this is a BISG-based sealed estimation
-channel; an earlier audit in this project found that estimator is
-still abstract/unimplemented, gated behind a research-mode flag. That
-gap is real, pre-existing, and outside delta's scope to close — delta
-just refuses to fabricate a stand-in for it.
+Not every decision owes one. A `decision_id` with no registered `MaturationRule` opens nothing (IVR quality settled at hangup is the motivating case). `open_for_decision` is thread-safe (check-then-insert under a lock). Duplicate open of the same `decision_fingerprint:kind` raises.
 
-`RegulatoryFinding` here also drops the `regulation`/
-`RegulationCheckProfile` fields the source's version carries (tying a
-finding to a specific regulation's check profile). That type wasn't
-read closely enough during extraction to reproduce faithfully, so it's
-omitted rather than guessed at.
+### Fairness
 
-## API
+Four-fifths screening on **weighted** group distributions. Cohort size uses **informative** rows (those with non-zero group weight), not raw `len(cohort)` — a cohort of 30 of which 2 carry weight must not pass the size gate as if it had 30 observations. Fewer than two groups with sufficient weight → indeterminate, not a spurious pass. A four-fifths flag is a **screening signal, not a legal determination**.
+
+## 3. What It Does NOT Do / Non-Goals
+
+- Does **not** replace sentinel_os (no Postgres, no twin replica, no sealed demographic channel, no BISG, no cassette loader).
+- Does **not** execute or authorize.
+- Does **not** crypto-shred, KMS-sign, or GDPR-erase. Hash chain is SHA-256 over plaintext canonical fields.
+- Does **not** hold lock state (ζ) or detect Keys (α).
+- Does **not** perform post-ACD agent routing.
+- Does **not** auto-open obligations for unknown `decision_id`s.
+
+## 4. Brutally Honest Current Status & Gaps
+
+| Gap | Detail |
+|---|---|
+| In-memory ledger | Process death loses the chain. No file backend (observe-perceive `execution_guard` has JSONL; this does not). |
+| Dual custody | Live orchestrator writes Conservation Kernel ledger + `ExecutionLedger`, not `delta.DecisionLedger`. sentinel_os writes Postgres. Three custody stories. |
+| Unpinned git deps | `zeta @ git+.../interconnected_zeta`, `beta @ git+.../interconnected_beta`. |
+| Fairness inputs | `group_distribution` must be supplied by the caller. δ does not estimate race/ethnicity (that's sentinel_os `bisg_estimator`, and even that is a proxy). |
+| `MIN_COHORT_SIZE_FOR_STATISTICAL_TEST` / `FOUR_FIFTHS_THRESHOLD` | Named constants. Four-fifths is the regulatory 0.8; cohort minimum is a tunable. |
+| No independent twin | sentinel_os twin is not ported. |
+| Actor self-report | Not used as ground truth here, but δ also does not independently observe outcomes — `resolve()` trusts caller-supplied `resolved_value` + `provenance` string. |
+
+## 5. Core Invariants & Guarantees
+
+- Recomputation over trust for the hash chain.
+- Fail-closed on unknown obligation ids.
+- Duplicate obligation open is an error, not a silent overwrite.
+- Indeterminate fairness beats a spurious pass on small/uninformative cohorts.
+- Actor-supplied outcomes are recorded with provenance stamps; they are not promoted to "verified" without the caller saying so.
+
+## 6. Inputs, Outputs & Type Contracts
 
 ```python
-from datetime import datetime
-from delta import DecisionLedger, DecisionObligationTracker, MaturationRule, PROVENANCE_VERIFIED
-
-ledger = DecisionLedger()
-obligations = DecisionObligationTracker()
-obligations.register_maturation("mortgage_approve", MaturationRule(kind="loan_performance", horizon_seconds=730 * 86400))
-
-# decision is a beta.Decision, from beta.DecisionEngine.decide(...)
-entry = ledger.append(decision)
-assert ledger.verify_chain_integrity()
-
-obligation = obligations.open_for_decision(decision, domain="mortgage", opened_at=decision.timestamp.timestamp())
-# ... 24 months later, once the loan's performance is known ...
-resolved = obligations.resolve_obligation(
-    obligation.obligation_id, resolved_at=..., resolved_value={"paid_on_time": True},
-    provenance=PROVENANCE_VERIFIED, favorable=True,
-)
-
-from delta import to_cohort_decision, check_statistical_outcome_equity
-cohort = [to_cohort_decision(o, group_distribution={"group_a": 1.0}) for o in obligations.all() if o.state == "RESOLVED"]
-findings = check_statistical_outcome_equity(cohort)  # [] if clean, else four-fifths FLAG findings
+from delta import DecisionLedger, DecisionObligationTracker, check_statistical_outcome_equity
+from delta.obligation import MaturationRule, OutcomeObligation
+from delta.fairness import CohortDecision, RegulatoryFinding
+# LedgerEntry: audit_id, timestamp, decision, immutable_hash, previous_hash
+# OutcomeObligation: obligation_id, decision_fingerprint, domain, kind, opened_at, subject_id, status, ...
 ```
 
-See `examples/full_pipeline.py` for two worked scenarios: the pediatric
-alpha→zeta→beta→delta pipeline (where decisions resolve immediately, so
-no obligation opens — that's correct, not a gap), and a synthetic
-mortgage cohort where an obligation matures 24 months later and the
-fairness screen correctly flags a disparate-impact pattern.
+`DecisionLedger.append(decision, timestamp=None) -> LedgerEntry`  
+`DecisionLedger.verify() -> bool` (recomputes)
 
-## Where this fits
+## 7. Stack Integration Topology
 
-```
-interconnected_alpha  -- raw vitals -> named Keys
-interconnected_zeta   -- Keys -> Locks -> open/closed decisions
-interconnected_beta   -- Lock states -> a Decision + narrative
-interconnected_delta  -- (this repo) records, tracks obligations, verifies, fairness-screens
+```text
+β.Decision ──┬── δ.DecisionLedger.append          (hash chain)
+             └── δ.DecisionObligationTracker      (if MaturationRule registered)
+                        │  resolve / abandon / stay_open
+                        ▼
+               CohortDecision[] → four-fifths screen
 ```
 
-## Tests
+Production-shaped sibling (not imported): [`sentinel_os`](https://github.com/wking53214/sentinel_os) `outcome_v1.py`, `regulatory_checks.py`, `governance/ledger_postgres.py`.  
+Example: `examples/full_pipeline.py`.
 
-```
-pip install -e ".[dev]"
-pytest
-```
-
-69 tests. Depends on `zeta` and `beta`.
+Apache-2.0.
