@@ -4,6 +4,7 @@ from delta.obligation import (
     OUTCOME_ABANDONED,
     OUTCOME_OPEN,
     OUTCOME_RESOLVED,
+    OUTCOME_STATES,
     PROVENANCE_ESTIMATED,
     PROVENANCE_VERIFIED,
     REASON_DECISION_SUPERSEDED,
@@ -11,6 +12,7 @@ from delta.obligation import (
     REASON_NOT_YET_DUE,
     MaturationRule,
     OutcomeIntegrityError,
+    OutcomeObligation,
     abandon,
     horizon_honored,
     is_overdue,
@@ -178,6 +180,83 @@ def test_is_overdue_false_once_resolved():
 
 
 # --- horizon_honored ---
+
+# --- Cross-field validation gaps caught by adversarial review ---
+
+def test_validate_rejects_open_with_resolution_provenance_set():
+    # A directly-constructed, self-contradictory record (bypassing the
+    # helper functions) that claims to be OPEN but also carries a
+    # resolution_provenance -- must be caught.
+    obligation = OutcomeObligation(
+        obligation_id="o1", decision_fingerprint="fp1", domain="d", obligation_kind="x",
+        opened_at=0.0, expected_by=DAY, state=OUTCOME_OPEN, reason_code=REASON_NOT_YET_DUE,
+        resolution_provenance=PROVENANCE_VERIFIED,
+    )
+    with pytest.raises(OutcomeIntegrityError):
+        validate_obligation(obligation)
+
+
+def test_validate_rejects_open_with_resolution_method_set():
+    obligation = OutcomeObligation(
+        obligation_id="o1", decision_fingerprint="fp1", domain="d", obligation_kind="x",
+        opened_at=0.0, expected_by=DAY, state=OUTCOME_OPEN, reason_code=REASON_NOT_YET_DUE,
+        resolution_method="some_method",
+    )
+    with pytest.raises(OutcomeIntegrityError):
+        validate_obligation(obligation)
+
+
+def test_validate_rejects_resolved_at_before_opened_at():
+    obligation = OutcomeObligation(
+        obligation_id="o1", decision_fingerprint="fp1", domain="d", obligation_kind="x",
+        opened_at=100.0, expected_by=200.0, state=OUTCOME_RESOLVED, reason_code=None,
+        resolved_at=50.0,  # before opened_at=100.0
+        resolved_value={"x": 1}, resolution_provenance=PROVENANCE_VERIFIED, favorable=True,
+    )
+    with pytest.raises(OutcomeIntegrityError, match="cannot be before"):
+        validate_obligation(obligation)
+
+
+def test_validate_rejects_abandoned_without_resolved_at():
+    obligation = OutcomeObligation(
+        obligation_id="o1", decision_fingerprint="fp1", domain="d", obligation_kind="x",
+        opened_at=0.0, expected_by=DAY, state=OUTCOME_ABANDONED,
+        reason_code=REASON_DECISION_SUPERSEDED, resolved_at=None,
+    )
+    with pytest.raises(OutcomeIntegrityError):
+        validate_obligation(obligation)
+
+
+def test_validate_rejects_abandoned_with_resolved_value():
+    obligation = OutcomeObligation(
+        obligation_id="o1", decision_fingerprint="fp1", domain="d", obligation_kind="x",
+        opened_at=0.0, expected_by=DAY, state=OUTCOME_ABANDONED,
+        reason_code=REASON_DECISION_SUPERSEDED, resolved_at=DAY,
+        resolved_value={"note": "not actually resolved"},
+    )
+    with pytest.raises(OutcomeIntegrityError):
+        validate_obligation(obligation)
+
+
+def test_validate_rejects_abandoned_with_resolution_provenance():
+    obligation = OutcomeObligation(
+        obligation_id="o1", decision_fingerprint="fp1", domain="d", obligation_kind="x",
+        opened_at=0.0, expected_by=DAY, state=OUTCOME_ABANDONED,
+        reason_code=REASON_DECISION_SUPERSEDED, resolved_at=DAY,
+        resolution_provenance=PROVENANCE_VERIFIED,
+    )
+    with pytest.raises(OutcomeIntegrityError):
+        validate_obligation(obligation)
+
+
+def test_valid_abandoned_obligation_passes():
+    # abandon() produces exactly this shape -- confirms the new checks
+    # don't reject the helper function's own legitimate output.
+    rule = MaturationRule(kind="x", horizon_seconds=DAY)
+    obligation = open_obligation("o1", "fp1", "d", rule, opened_at=0.0)
+    dropped = abandon(obligation, REASON_DECISION_SUPERSEDED, at=DAY)
+    validate_obligation(dropped)  # must not raise
+
 
 def test_horizon_honored_counts_by_state_and_overdue():
     rule = MaturationRule(kind="x", horizon_seconds=DAY)

@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime
 
 import pytest
@@ -100,6 +101,41 @@ def test_portfolio_status_reflects_all_obligations():
     status = tracker.portfolio_status(now=DAY * 2)
     assert status["OPEN"] == 2
     assert status["overdue"] == 2
+
+
+def test_concurrent_open_for_decision_never_loses_an_obligation():
+    # Regression (adversarial-review major): the duplicate-open guard
+    # was an unguarded check-then-act on a plain dict. Fire many
+    # threads at the SAME decision (same obligation_id) concurrently --
+    # exactly one must succeed, every other must raise ValueError, and
+    # the tracker must end up with exactly one obligation, never a
+    # silently-overwritten or duplicated one.
+    tracker = DecisionObligationTracker()
+    tracker.register_maturation("loan_approve", MaturationRule(kind="loan_performance", horizon_seconds=DAY))
+    decision = make_decision(fp="fp-shared")
+
+    successes = []
+    failures = []
+    lock = threading.Lock()
+
+    def worker():
+        try:
+            result = tracker.open_for_decision(decision, domain="mortgage", opened_at=0.0)
+            with lock:
+                successes.append(result)
+        except ValueError as e:
+            with lock:
+                failures.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(successes) == 1, f"expected exactly 1 success, got {len(successes)}"
+    assert len(failures) == 19, f"expected exactly 19 ValueErrors, got {len(failures)}"
+    assert len(tracker.all()) == 1
 
 
 def test_multiple_decision_ids_with_different_rules():

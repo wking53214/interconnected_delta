@@ -50,8 +50,13 @@ from .obligation import (
     MaturationRule,
     OutcomeIntegrityError,
     OutcomeObligation,
+    abandon,
     horizon_honored,
     is_overdue,
+    open_obligation,
+    resolve,
+    stay_open,
+    validate_obligation,
 )
 from .decision_obligations import DecisionObligationTracker
 from .fairness import (
@@ -71,6 +76,11 @@ __all__ = [
     "OutcomeObligation",
     "OutcomeIntegrityError",
     "DecisionObligationTracker",
+    "open_obligation",
+    "resolve",
+    "stay_open",
+    "abandon",
+    "validate_obligation",
     "is_overdue",
     "horizon_honored",
     "OUTCOME_OPEN",

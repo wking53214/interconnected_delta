@@ -121,6 +121,42 @@ def test_probability_weighted_bisg_style_distribution_contributes_partially():
     assert isinstance(findings, list)
 
 
+# --- Input validation caught by adversarial review ---
+
+def test_cohort_decision_rejects_negative_probability():
+    with pytest.raises(ValueError, match="negative"):
+        CohortDecision("s1", True, {"group_a": -0.1})
+
+
+def test_cohort_decision_rejects_distribution_summing_over_one():
+    with pytest.raises(ValueError, match="exceeds 1.0"):
+        CohortDecision("s1", True, {"group_a": 0.7, "group_b": 0.6})
+
+
+def test_cohort_decision_allows_distribution_summing_to_exactly_one():
+    cd = CohortDecision("s1", True, {"group_a": 0.6, "group_b": 0.4})
+    assert cd.group_distribution == {"group_a": 0.6, "group_b": 0.4}
+
+
+def test_cohort_decision_rejects_non_numeric_probability():
+    with pytest.raises(ValueError, match="must be a number"):
+        CohortDecision("s1", True, {"group_a": "high"})
+
+
+def test_empty_distribution_records_do_not_count_toward_minimum_cohort_size():
+    # Regression (adversarial-review major): 30 raw records, but only 5
+    # carry any real group_distribution signal -- must be treated as an
+    # insufficient (5, not 30) cohort, not silently pass the size gate.
+    cohort = [CohortDecision(f"s{i}", True, {"group_a": 1.0}) for i in range(5)]
+    cohort += [CohortDecision(f"empty{i}", True, {}) for i in range(25)]
+
+    findings = check_statistical_outcome_equity(cohort)
+    assert len(findings) == 1
+    assert findings[0].classification == "indeterminate_insufficient_cohort"
+    assert findings[0].evidence["informative_cohort_size"] == 5
+    assert findings[0].evidence["cohort_size"] == 30
+
+
 def test_negligible_weight_group_excluded():
     cohort = []
     for i in range(30):

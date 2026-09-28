@@ -98,4 +98,4 @@ pip install -e ".[dev]"
 pytest
 ```
 
-52 tests. Depends on `zeta` and `beta`.
+69 tests. Depends on `zeta` and `beta`.

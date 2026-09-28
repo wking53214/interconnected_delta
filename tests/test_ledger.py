@@ -67,6 +67,41 @@ def test_verify_chain_integrity_false_if_entry_tampered():
     assert ledger.verify_chain_integrity() is False
 
 
+@pytest.mark.parametrize("field,new_value", [
+    ("reasoning", "This reasoning was rewritten after the fact."),
+    ("instructions", "Different instructions entirely."),
+    ("confidence", 0.01),
+    ("reversal_conditions", ("a completely different condition",)),
+])
+def test_verify_chain_integrity_catches_tampering_with_narrative_fields(field, new_value):
+    # Regression (adversarial-review blocker): an earlier version only
+    # hashed entity_id/decision_id/decision/decision_fingerprint, so
+    # swapping reasoning/instructions/confidence/reversal_conditions
+    # while leaving those 4 fields untouched went UNDETECTED --
+    # defeating the entire point of a tamper-evident ledger. Every
+    # informational field must now be covered by the hash.
+    ledger = DecisionLedger()
+    original = make_decision(decision_id="d1", fp="fp1")
+    ledger.append(original)
+
+    tampered_kwargs = dict(
+        entity_id=original.entity_id, decision_id=original.decision_id,
+        decision=original.decision, timestamp=original.timestamp,
+        confidence=original.confidence, decision_fingerprint=original.decision_fingerprint,
+    )
+    tampered_kwargs[field] = new_value
+    tampered = Decision(**tampered_kwargs)
+
+    entry = ledger.entries[0]
+    ledger.entries[0] = type(entry)(
+        audit_id=entry.audit_id, timestamp=entry.timestamp, decision=tampered,
+        previous_hash=entry.previous_hash, immutable_hash=entry.immutable_hash,
+    )
+    assert ledger.verify_chain_integrity() is False, (
+        f"tampering with Decision.{field} must be detected, but the chain still verified"
+    )
+
+
 def test_verify_chain_integrity_false_if_hash_forged():
     ledger = DecisionLedger()
     ledger.append(make_decision())

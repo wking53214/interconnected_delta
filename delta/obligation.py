@@ -150,7 +150,7 @@ class OutcomeObligation:
 def open_obligation(obligation_id: str, decision_fingerprint: str, domain: str,
                      rule: MaturationRule, opened_at: float,
                      subject_id: Optional[str] = None,
-                     detail: Mapping[str, Any] | None = None) -> OutcomeObligation:
+                     detail: Optional[Mapping[str, Any]] = None) -> OutcomeObligation:
     """Open an obligation from a maturation rule. The horizon is
     computed, never passed in, so expected_by cannot drift from the
     rule that justifies it."""
@@ -274,6 +274,16 @@ def validate_obligation(obligation: OutcomeObligation) -> None:
                 f"an OPEN obligation cannot already be favorable={obligation.favorable!r} "
                 f"-- a verdict without a resolution behind it is a guess dressed as a measurement"
             )
+        if obligation.resolution_provenance is not None:
+            violations.append(
+                f"an OPEN obligation cannot carry a resolution_provenance="
+                f"{obligation.resolution_provenance!r} -- nothing has been resolved yet"
+            )
+        if obligation.resolution_method is not None:
+            violations.append(
+                f"an OPEN obligation cannot carry a resolution_method="
+                f"{obligation.resolution_method!r} -- nothing has been resolved yet"
+            )
 
     elif obligation.state == OUTCOME_RESOLVED:
         if obligation.reason_code is not None:
@@ -282,6 +292,14 @@ def validate_obligation(obligation: OutcomeObligation) -> None:
             )
         if obligation.resolved_at is None:
             violations.append("a RESOLVED obligation must record resolved_at")
+        elif (isinstance(obligation.resolved_at, (int, float))
+                and isinstance(obligation.opened_at, (int, float))
+                and obligation.resolved_at < obligation.opened_at):
+            violations.append(
+                f"resolved_at ({obligation.resolved_at!r}) cannot be before "
+                f"opened_at ({obligation.opened_at!r}) -- a resolution cannot "
+                f"predate the obligation it resolves"
+            )
         if not isinstance(obligation.resolved_value, dict) or not obligation.resolved_value:
             violations.append(
                 "a RESOLVED obligation must record a non-empty resolved_value -- "
@@ -308,6 +326,26 @@ def validate_obligation(obligation: OutcomeObligation) -> None:
             )
         if obligation.favorable is not None:
             violations.append("an ABANDONED obligation has no favorability; nothing resolved")
+        if obligation.resolved_at is None:
+            violations.append(
+                "an ABANDONED obligation must record when it was abandoned (resolved_at) "
+                "-- a decision to stop watching still happened at a specific time"
+            )
+        if obligation.resolved_value is not None:
+            violations.append(
+                "an ABANDONED obligation carries no resolved_value -- abandonment is "
+                "not a resolution, it's a declaration that no resolution is coming"
+            )
+        if obligation.resolution_provenance is not None:
+            violations.append(
+                f"an ABANDONED obligation cannot carry a resolution_provenance="
+                f"{obligation.resolution_provenance!r} -- nothing was resolved"
+            )
+        if obligation.resolution_method is not None:
+            violations.append(
+                f"an ABANDONED obligation cannot carry a resolution_method="
+                f"{obligation.resolution_method!r} -- nothing was resolved"
+            )
 
     if violations:
         raise OutcomeIntegrityError(obligation.obligation_id, violations)

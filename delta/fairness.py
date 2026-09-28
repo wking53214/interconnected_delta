@@ -47,6 +47,32 @@ class CohortDecision:
     favorable_outcome: bool
     group_distribution: Mapping[str, float]
 
+    def __post_init__(self) -> None:
+        # Adversarial review caught this missing entirely: without it,
+        # a malformed group_distribution (negative weight, or weight
+        # summing past 1.0) doesn't crash -- it just silently distorts
+        # the weighted rate calculation into a confident-looking wrong
+        # number, which is worse than an error for a fairness finding.
+        total = 0.0
+        for group, prob in self.group_distribution.items():
+            if not isinstance(prob, (int, float)) or isinstance(prob, bool):
+                raise ValueError(
+                    f"CohortDecision({self.subject_id!r}): group_distribution[{group!r}] "
+                    f"must be a number, got {type(prob).__name__}"
+                )
+            if prob < 0:
+                raise ValueError(
+                    f"CohortDecision({self.subject_id!r}): group_distribution[{group!r}]="
+                    f"{prob!r} is negative; a probability cannot be negative"
+                )
+            total += prob
+        if total > 1.0 + 1e-9:
+            raise ValueError(
+                f"CohortDecision({self.subject_id!r}): group_distribution values sum to "
+                f"{total!r}, which exceeds 1.0 -- a probability distribution cannot "
+                f"assign more than full mass across groups"
+            )
+
 
 @dataclass(frozen=True)
 class RegulatoryFinding:
@@ -97,8 +123,19 @@ def check_statistical_outcome_equity(
     favorable-outcome rate falls below 80% of the highest-rate group's,
     or one FLAG (indeterminate) finding when the cohort is too small or
     too few groups have coverage to compare.
+
+    The size floor counts only records with SOME real signal (a
+    non-empty group_distribution with positive total weight) -- an
+    earlier version counted raw len(cohort), so a cohort of 30 records
+    where only 2 carried any actual group weight would pass the "is
+    this cohort big enough" gate as if it had 30 real observations
+    (adversarial review caught this).
     """
-    if len(cohort) < MIN_COHORT_SIZE_FOR_STATISTICAL_TEST:
+    informative = sum(
+        1 for d in cohort
+        if d.group_distribution and sum(d.group_distribution.values()) > 0
+    )
+    if informative < MIN_COHORT_SIZE_FOR_STATISTICAL_TEST:
         return [RegulatoryFinding(
             check=check_name,
             subject_id=f"cohort:{len(cohort)}",
@@ -107,6 +144,7 @@ def check_statistical_outcome_equity(
             score=0.0,
             evidence={
                 "cohort_size": len(cohort),
+                "informative_cohort_size": informative,
                 "minimum_required": MIN_COHORT_SIZE_FOR_STATISTICAL_TEST,
                 "detail": "cohort is too small for a statistical disparate-impact "
                           "comparison to mean anything -- reporting indeterminate "
@@ -163,6 +201,14 @@ def check_statistical_outcome_equity(
                         "highest_group_favorable_rate": round(highest_rate, 4),
                         "ratio": round(ratio, 4),
                         "threshold": FOUR_FIFTHS_THRESHOLD,
+                        "cohort_size": len(cohort),
+                        "all_group_rates": {g: round(r, 4) for g, r in sorted(rates.items())},
+                        "detail": f"{group}'s weighted favorable-outcome rate ({rate:.1%}) is "
+                                  f"below {FOUR_FIFTHS_THRESHOLD:.0%} of the highest group's "
+                                  f"({highest_rate:.1%}) -- EEOC four-fifths screening signal, "
+                                  f"not a legal determination on its own",
+                        "score_meaning": "0.0-1.0, how far below the four-fifths threshold "
+                                          "this group's rate falls (1 - ratio)",
                     },
                 ))
     return findings

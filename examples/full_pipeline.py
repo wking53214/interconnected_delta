@@ -72,7 +72,8 @@ def example_1_pediatric_ledger():
     entry = ledger.append(decision)
     print(f"\nDecision: {decision.decision}  (fingerprint {decision.decision_fingerprint[:12]}...)")
     print(f"Ledger entry: audit_id={entry.audit_id}  immutable_hash={entry.immutable_hash[:12]}...")
-    print(f"Chain verifies: {ledger.verify_chain_integrity()}")
+    assert ledger.verify_chain_integrity(), "ledger chain failed to verify"
+    print("Chain verifies: True")
 
     obligation = obligations.open_for_decision(decision, domain="clinical", opened_at=t0.timestamp())
     print(f"Obligation opened: {obligation}  (None is correct -- clinical escalation resolves at discharge, not later)")
@@ -120,7 +121,8 @@ def example_2_mortgage_obligation_and_fairness():
         )
         resolved_cohort.append(to_cohort_decision(resolved, {group: 1.0}))
 
-    print(f"\nLedger entries: {len(ledger)}, chain verifies: {ledger.verify_chain_integrity()}")
+    assert ledger.verify_chain_integrity(), "ledger chain failed to verify"
+    print(f"\nLedger entries: {len(ledger)}, chain verifies: True")
     print(f"Portfolio status: {obligations.portfolio_status(now=(t0 + timedelta(days=1000)).timestamp())}")
 
     findings = check_statistical_outcome_equity(resolved_cohort)

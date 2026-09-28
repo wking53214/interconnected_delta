@@ -8,18 +8,37 @@ manifest_hash) to chain any beta.Decision instead.
 
 Faithfully preserved:
   - Genesis hash: sha256(b"<PREFIX>_GENESIS") seeds the chain.
-  - Each entry hashes ONLY a canonical subset of its fields (source
-    hashes audit_id/timestamp/evaluated_gates/final_verdict -- NOT
-    request_snapshot/policy_outputs/manifest_version/manifest_hash,
-    which ride along stored but outside the tamper-evidence hash). This
-    module's canonical subset is decision_id/decision/entity_id/
-    decision_fingerprint/timestamp -- beta.Decision's own
-    decision_fingerprint already captures triggered_by_locks/keys, so
-    there's no need to separately hash those again here.
   - immutable_hash = sha256(previous_hash + sha256(canonical_subset)).
   - verify_chain_integrity() recomputes the whole chain from genesis
     and compares, rather than trusting stored hashes -- the same
     "recompute, don't trust" posture as PERCEIVE's version.
+
+CHANGED from the source, and from an earlier version of this file
+(adversarial review caught both problems below):
+
+  - The canonical subset now hashes ALL of a Decision's informational
+    fields (entity_id, decision_id, decision, timestamp, confidence,
+    triggered_by_locks, triggered_by_keys, newly_triggered_locks,
+    decision_fingerprint, reasoning, reversal_conditions, instructions)
+    plus audit_id, not just a 4-field subset. An earlier version hashed
+    only entity_id/decision_id/decision/decision_fingerprint on the
+    theory that decision_fingerprint already "captures" the rest --
+    but decision_fingerprint is just a stored STRING field; nothing
+    forces it to still match if reasoning/instructions/confidence/etc.
+    are swapped afterward without recomputing it. A ledger that doesn't
+    itself hash those fields can't detect that swap. This is the whole
+    point of a tamper-evident ledger, so it now hashes the fields
+    directly rather than trusting decision_fingerprint's internal
+    consistency.
+  - audit_id is generated from decision content (a hash of entry
+    position + decision_fingerprint), not wall-clock time like the
+    source's `sha256(f"{n}:{datetime.now(timezone.utc).isoformat()}")`.
+    This trades the source's ingestion-time provenance for determinism:
+    replaying the same decisions produces the same audit_ids and the
+    same chain, which the test suite relies on
+    (test_two_ledgers_with_identical_decisions_produce_identical_chains).
+    If wall-clock ingestion provenance matters more than replay
+    determinism for a given deployment, this would need revisiting.
 """
 
 import hashlib
@@ -45,11 +64,19 @@ class LedgerEntry:
 def _canonical_subset(entry_audit_id: str, timestamp: datetime, decision: Decision) -> dict:
     return {
         "audit_id": entry_audit_id,
-        "timestamp": timestamp.isoformat(),
+        "entry_timestamp": timestamp.isoformat(),
         "entity_id": decision.entity_id,
         "decision_id": decision.decision_id,
         "decision": decision.decision,
+        "decision_timestamp": decision.timestamp.isoformat(),
+        "confidence": decision.confidence,
+        "triggered_by_locks": list(decision.triggered_by_locks),
+        "triggered_by_keys": list(decision.triggered_by_keys),
+        "newly_triggered_locks": list(decision.newly_triggered_locks),
         "decision_fingerprint": decision.decision_fingerprint,
+        "reasoning": decision.reasoning,
+        "reversal_conditions": list(decision.reversal_conditions),
+        "instructions": decision.instructions,
     }
 
 
