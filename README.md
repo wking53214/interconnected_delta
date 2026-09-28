@@ -1,5 +1,17 @@
 # interconnected_delta
 
+**Role in the governed action stack:** CUSTODY — record Decisions, track outcome obligations, verify later, fairness-screen cohorts.
+
+```text
+α Alpha (Keys) → ζ Zeta (Locks) → β Beta (Decision) → δ Delta (custody)
+```
+
+Part of the composable decision spine. Live orchestrated path: [observe-perceive](https://github.com/wking53214/observe-perceive). Domain ledger/twin runtime: [sentinel_os](https://github.com/wking53214/sentinel_os).
+
+This is where the real-time decision half (α/ζ/β) meets mature obligation and fairness machinery already present in `sentinel_os`.
+
+---
+
 Records `beta.Decision`s in a hash-chained ledger, tracks their outcome
 obligations, verifies them when they mature, and feeds resolved outcomes
 into cohort-level fairness screening — the fourth and final stage:
