@@ -10,7 +10,7 @@ Records `beta.Decision`s in a hash-chained ledger, tracks outcome obligations, s
 α Alpha (Keys) → ζ Zeta (Locks) → β Beta (Decision) → δ Delta (this repo)
 ```
 
-This is where the real-time decision half (α/ζ/β) meets mature obligation and fairness machinery already present in [`sentinel_os`](https://github.com/wking53214/sentinel_os). Domain-blind production custody remains sentinel_os (Postgres, twin, sealed demographic channel). δ is the in-process extract that can consume a `beta.Decision`.
+This is where the real-time decision half (α/ζ/β) meets mature obligation and fairness machinery already present in a separate private repository. Production custody remains there. δ is the in-process extract that can consume a `beta.Decision`.
 
 ## 2. Full System Scope & Architectural Depth
 
@@ -19,9 +19,9 @@ Unlike α/ζ/β (unifying duplicated patterns), δ is mostly **wiring of already
 | Module | Provenance |
 |---|---|
 | `ledger.py` | Extracted from PERCEIVE `ImmutableAuditLedger` (`perceive_consolidated.py:579-633`): genesis + SHA-256 chain + recompute-to-verify. Generalized from PERCEIVE's entry shape to any `beta.Decision`. |
-| `obligation.py` | Near-verbatim from sentinel_os `outcome_v1.py`: `MaturationRule`, `OutcomeObligation`, OPEN → RESOLVED / ABANDONED / stay-open. Bound to `Decision.decision_fingerprint` instead of a raw ledger row hash. Provenance rule: claims are verified / attested / estimated — never "probably". |
-| `fairness.py` | Extracted from sentinel_os `regulatory_checks.py`: EEOC four-fifths screen (29 CFR 1607.4(D)). `CohortDecision` + `check_statistical_outcome_equity`. |
-| `decision_obligations.py` | **New.** `DecisionObligationTracker` adapter. `outcome_v1` operated on generic row dicts. |
+| `obligation.py` | Near-verbatim from a separate private repository: `MaturationRule`, `OutcomeObligation`, OPEN → RESOLVED / ABANDONED / stay-open. Bound to `Decision.decision_fingerprint` instead of a raw ledger row hash. Provenance rule: claims are verified / attested / estimated - never "probably". |
+| `fairness.py` | Extracted from a separate private repository: EEOC four-fifths screen (29 CFR 1607.4(D)). `CohortDecision` + `check_statistical_outcome_equity`. |
+| `decision_obligations.py` | **New.** `DecisionObligationTracker` adapter. The original obligation code operated on generic row dicts. |
 
 ### Ledger
 
@@ -40,7 +40,7 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 
 ## 3. What It Does NOT Do / Non-Goals
 
-- Does **not** replace sentinel_os (no Postgres, no twin replica, no sealed demographic channel, no BISG, no cassette loader).
+- Does **not** replace production custody, which remains in a separate private repository.
 - Does **not** execute or authorize.
 - Does **not** crypto-shred, KMS-sign, or GDPR-erase. Hash chain is SHA-256 over plaintext canonical fields.
 - Does **not** hold lock state (ζ) or detect Keys (α).
@@ -51,12 +51,11 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 
 | Gap | Detail |
 |---|---|
-| In-memory ledger | Process death loses the chain. No file backend (observe-perceive `execution_guard` has JSONL; this does not). |
-| Dual custody | Live orchestrator writes Conservation Kernel ledger + `ExecutionLedger`, not `delta.DecisionLedger`. sentinel_os writes Postgres. Three custody stories. |
+| In-memory ledger | Process death loses the chain. No file backend. |
+| Split custody | Other components keep their own ledgers, not `delta.DecisionLedger`. Custody is not unified. |
 | Unpinned git deps | `zeta @ git+.../interconnected_zeta`, `beta @ git+.../interconnected_beta`. |
-| Fairness inputs | `group_distribution` must be supplied by the caller. δ does not estimate race/ethnicity (that's sentinel_os `bisg_estimator`, and even that is a proxy). |
+| Fairness inputs | `group_distribution` must be supplied by the caller. δ does not estimate race/ethnicity (any such estimate would be only a proxy). |
 | `MIN_COHORT_SIZE_FOR_STATISTICAL_TEST` / `FOUR_FIFTHS_THRESHOLD` | Named constants. Four-fifths is the regulatory 0.8; cohort minimum is a tunable. |
-| No independent twin | sentinel_os twin is not ported. |
 | Actor self-report | Not used as ground truth here, but δ also does not independently observe outcomes — `resolve()` trusts caller-supplied `resolved_value` + `provenance` string. |
 
 ## 5. Core Invariants & Guarantees
@@ -90,7 +89,6 @@ from delta.fairness import CohortDecision, RegulatoryFinding
                CohortDecision[] → four-fifths screen
 ```
 
-Production-shaped sibling (not imported): [`sentinel_os`](https://github.com/wking53214/sentinel_os) `outcome_v1.py`, `regulatory_checks.py`, `governance/ledger_postgres.py`.  
 Example: `examples/full_pipeline.py`.
 
 Apache-2.0.
