@@ -93,4 +93,4 @@ from delta.fairness import CohortDecision, RegulatoryFinding
 Production-shaped sibling (not imported): [`sentinel_os`](https://github.com/wking53214/sentinel_os) `outcome_v1.py`, `regulatory_checks.py`, `governance/ledger_postgres.py`.  
 Example: `examples/full_pipeline.py`.
 
-Proprietary. Copyright (c) 2026 William King. All rights reserved. See LICENSE.
+Proprietary. Copyright (c) 2026 William N. King. All rights reserved. See LICENSE.
