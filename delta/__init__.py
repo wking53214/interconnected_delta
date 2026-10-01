@@ -4,26 +4,27 @@ screening.
 
 Three pieces, two different kinds of provenance:
 
-  - ledger.py: DecisionLedger, generalized from PERCEIVE's
-    ImmutableAuditLedger (a real, working SHA256 hash chain) to chain
-    beta.Decisions instead of PERCEIVE's specific entry shape.
+  - ledger.py: DecisionLedger, generalized from the original private
+    implementation's ledger (a real, working SHA256 hash chain) to chain
+    beta.Decisions instead of that ledger's specific entry shape.
 
   - obligation.py: MaturationRule / OutcomeObligation / the OPEN ->
     RESOLVED|ABANDONED lifecycle, extracted near-verbatim from
-    sentinel_os's outcome_v1.py -- already a mature, rigorously
+    the original private implementation -- already a mature, rigorously
     validated, domain-blind module. Not reinvented, just relinked to
     Decision.decision_fingerprint instead of a raw ledger row's hash.
 
   - fairness.py: CohortDecision / check_statistical_outcome_equity,
-    extracted from sentinel_os's regulatory_checks.py -- the real EEOC
+    extracted from the original private implementation -- the real EEOC
     four-fifths disparate-impact screen (29 CFR 1607.4(D)), already
     wired to consume RESOLVED obligations, just never fed real
     decisions before.
 
   - decision_obligations.py: the one genuinely NEW piece -- a thin
     adapter (DecisionObligationTracker) linking beta.Decision to the
-    obligation lifecycle, since outcome_v1.py has no existing adapter
-    for beta.Decision specifically (it worked on generic decision rows).
+    obligation lifecycle, since the original private implementation has
+    no existing adapter for beta.Decision specifically (it worked on
+    generic decision rows).
 
 See each module's docstring for exactly what's extracted vs. new.
 """

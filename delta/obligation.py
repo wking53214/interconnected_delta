@@ -1,7 +1,7 @@
 """OutcomeObligation: a durable, typed record of what a Decision still owes.
 
-Extracted faithfully from sentinel_os's outcome_v1.py -- an already
-mature, well-tested, domain-blind module. This is NOT a reinvention;
+Extracted faithfully from the original private implementation -- an
+already mature, well-tested, domain-blind module. This is NOT a reinvention;
 the state machine, validation rules, and provenance discipline below
 match the source exactly, adapted only to link against beta.Decision
 (via decision_fingerprint) instead of a raw decision-row dict.
@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-# --- Provenance stamps (event_v1.py:69-71 in the source, values copied exactly) ---
+# --- Provenance stamps (values copied exactly from the source) ---
 PROVENANCE_VERIFIED = "verified"
 PROVENANCE_ATTESTED = "attested"
 PROVENANCE_ESTIMATED = "estimated"
@@ -125,7 +125,7 @@ class OutcomeObligation:
     """One durable obligation attached to one closed Decision.
 
     decision_fingerprint links back to the beta.Decision this is owed
-    on (the source links via a ledger row's current_hash; here that
+    on (the source links via a ledger row's hash; here that
     role is played by Decision.decision_fingerprint, which is what
     DecisionLedger chains on too).
     """

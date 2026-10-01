@@ -3,9 +3,9 @@
 1. The pediatric alpha -> zeta -> beta pipeline, extended through delta's
    ledger. Clinical escalation/discharge decisions resolve immediately
    (there's nothing to mature later), so this shows the LEDGER half of
-   delta but deliberately does NOT open an obligation -- matching
-   outcome_v1's own posture that a domain whose outcome is known at
-   decision time genuinely owes nothing later.
+   delta but deliberately does NOT open an obligation -- matching the
+   original private implementation's own posture that a domain whose
+   outcome is known at decision time genuinely owes nothing later.
 
 2. A synthetic mortgage-style scenario, hand-built directly as
    beta.Decision objects (no mortgage alpha/zeta wiring exists yet --

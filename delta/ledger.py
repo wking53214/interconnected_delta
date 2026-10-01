@@ -1,17 +1,15 @@
 """DecisionLedger: append-only, SHA256-chained record of beta.Decisions.
 
-Extracted from PERCEIVE's ImmutableAuditLedger (perceive_consolidated.py:
-579-633) -- a real, working genesis-hash + chain + verify mechanism,
-generalized from PERCEIVE's specific entry shape (request_snapshot/
-evaluated_gates/policy_outputs/final_verdict/manifest_version/
-manifest_hash) to chain any beta.Decision instead.
+Extracted from the original private implementation's ledger -- a real,
+working genesis-hash + chain + verify mechanism, generalized from that
+ledger's specific entry shape to chain any beta.Decision instead.
 
 Faithfully preserved:
   - Genesis hash: sha256(b"<PREFIX>_GENESIS") seeds the chain.
   - immutable_hash = sha256(previous_hash + sha256(canonical_subset)).
   - verify_chain_integrity() recomputes the whole chain from genesis
     and compares, rather than trusting stored hashes -- the same
-    "recompute, don't trust" posture as PERCEIVE's version.
+    "recompute, don't trust" posture as the original's version.
 
 CHANGED from the source, and from an earlier version of this file
 (adversarial review caught both problems below):
@@ -32,7 +30,8 @@ CHANGED from the source, and from an earlier version of this file
     consistency.
   - audit_id is generated from decision content (a hash of entry
     position + decision_fingerprint), not wall-clock time like the
-    source's `sha256(f"{n}:{datetime.now(timezone.utc).isoformat()}")`.
+    source, which hashed the entry position together with the current
+    UTC timestamp.
     This trades the source's ingestion-time provenance for determinism:
     replaying the same decisions produces the same audit_ids and the
     same chain, which the test suite relies on

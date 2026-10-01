@@ -1,11 +1,10 @@
 """DecisionObligationTracker: bridges beta.Decision to the OutcomeObligation lifecycle.
 
-NEW code, not extracted. outcome_v1.py's derive_open_obligations operates
-on generic decision-ROW dicts (current_hash, timestamp, an
-outcome_obligation declaration string, domain, subject_id) pulled from a
-ledger table -- sentinel_os's decisions aren't beta.Decision objects, so
-there's no existing adapter to extract from. This module is that adapter,
-using obligation.py's lifecycle functions exactly as-is underneath.
+NEW code, not extracted. The original private implementation operates
+on generic decision-ROW dicts pulled from a ledger table -- its
+decisions aren't beta.Decision objects, so there's no existing adapter
+to extract from. This module is that adapter, using obligation.py's
+lifecycle functions exactly as-is underneath.
 
 Maturation policy is declarative and keyed by decision_id, matching the
 whole project's config-over-inline-logic posture (zeta.LockSpec,
@@ -34,8 +33,9 @@ class DecisionObligationTracker:
 
     Not every decision owes one: a decision_id with no registered
     MaturationRule genuinely owes nothing later (an IVR call's quality
-    is settled at hangup) -- matches outcome_v1's own posture of
-    skipping rows with no declared obligation rather than inventing one.
+    is settled at hangup) -- matches the original private
+    implementation's own posture of skipping rows with no declared
+    obligation rather than inventing one.
 
     Thread-safe for concurrent open_for_decision calls: a lock guards
     the check-then-insert, so two callers racing to open the same

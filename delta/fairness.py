@@ -1,7 +1,7 @@
 """Fairness bridge: resolved OutcomeObligations -> cohort-level
 disparate-impact screening.
 
-Extracted from sentinel_os's regulatory_checks.py: CohortDecision and
+Extracted from the original private implementation: CohortDecision and
 check_statistical_outcome_equity are copied faithfully --
   - the EEOC four-fifths rule (29 CFR 1607.4(D)): a group's favorable-
     outcome rate below 80% of the highest-rate group's is evidence of
@@ -23,7 +23,7 @@ module only consumes it -- same domain-blind posture as the source,
 which never guesses what counts as "favorable" either.
 
 Simplified from the source: RegulatoryFinding here drops the
-`regulation`/RegulationCheckProfile fields the source's version carries
+regulation-binding fields the source's version carries
 (tying a finding to a specific named regulation's check profile) --
 that type wasn't read closely enough to extract faithfully, so it's
 omitted rather than guessed at. A caller needing that binding attaches
