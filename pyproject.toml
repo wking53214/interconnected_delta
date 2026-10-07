@@ -3,6 +3,7 @@ name = "delta"
 version = "0.1.0"
 description = "Records beta.Decisions in a hash-chained ledger, tracks outcome obligations, and feeds resolved outcomes into cohort-level fairness screening."
 requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
 dependencies = [
     "zeta @ git+https://github.com/wking53214/interconnected_zeta",
     "beta @ git+https://github.com/wking53214/interconnected_beta",
