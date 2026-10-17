@@ -6,6 +6,7 @@ depend on what the test environment happens to contain. They never skip.
 """
 import ast
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -20,6 +21,7 @@ ENV = {
     "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     "PYTHONDONTWRITEBYTECODE": "1",
 }
+EXTRA_PIN = "cns @ git+https://github.com/wking53214/CNS.git@v1.8.0"
 
 
 def run(code: str, *, block: bool = True) -> subprocess.CompletedProcess:
@@ -99,3 +101,35 @@ def test_no_module_of_the_package_imports_cns_by_statement():
             if bad:
                 offenders.setdefault(path.name, []).extend(bad)
     assert offenders == {}
+
+
+# pyproject is read as text: tomllib needs Python 3.11 and the floor here is 3.9.
+
+def _section(text: str, header: str) -> str:
+    lines, found, body = text.splitlines(), False, []
+    for line in lines:
+        if line.startswith("["):
+            if found:
+                break
+            found = line.strip() == f"[{header}]"
+        elif found:
+            body.append(line)
+    assert found, f"no [{header}] table in pyproject.toml"
+    return "\n".join(body)
+
+
+def _list_value(section: str, key: str) -> list:
+    match = re.search(rf"^{re.escape(key)}\s*=\s*\[(.*?)\]\s*$", section, re.S | re.M)
+    assert match, f"no `{key} = [...]` in the section"
+    body = re.sub(r"^\s*#.*$", "", match.group(1), flags=re.M)
+    return re.findall(r'"([^"]*)"', body)
+
+
+def test_the_package_declares_no_runtime_dependency_on_cns_and_pins_the_extra():
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    runtime = _list_value(_section(text, "project"), "dependencies")
+    assert runtime, "the runtime dependencies were not found (zeta is one)"
+    assert not [d for d in runtime if re.match(r"\s*cns\b", d, re.I)], runtime
+    assert _list_value(_section(text, "project.optional-dependencies"), "cns") == [EXTRA_PIN]
+    other_extras = _section(text, "project.optional-dependencies").replace(EXTRA_PIN, "")
+    assert not re.search(r"\bcns\b", re.sub(r"^cns\s*=", "", other_extras, flags=re.M))

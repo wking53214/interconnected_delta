@@ -11,6 +11,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+# Optional: lets a LedgerEntry or OutcomeObligation be bound to a CNS verdict (delta.cns_connector). Nothing in delta imports CNS otherwise.
+cns = ["cns @ git+https://github.com/wking53214/CNS.git@v1.8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

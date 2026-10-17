@@ -93,4 +93,14 @@ from delta.fairness import CohortDecision, RegulatoryFinding
 Production-shaped sibling (not imported): [`sentinel_os`](https://github.com/wking53214/sentinel_os) `outcome_v1.py`, `regulatory_checks.py`, `governance/ledger_postgres.py`.  
 Example: `examples/full_pipeline.py`.
 
+## Optional CNS connection
+
+delta does not need CNS. It has no runtime dependency on it, nothing in the package imports it when it loads, and the ledger, obligations and fairness screen never touch it (`tests/test_cns_independence.py` checks this with CNS blocked). `delta/cns_connector.py` is the one place that knows CNS exists. Install it with `pip install 'delta[cns] @ git+https://github.com/wking53214/interconnected_delta'`; without CNS its functions raise `CnsNotInstalled` and nothing else changes.
+
+It makes delta's two primary records **bindable**: a `LedgerEntry` (the recorded `beta.Decision`, the time it was recorded and its place in the chain: `audit_id`, `previous_hash`, `immutable_hash`) and an `OutcomeObligation` (every field, in whatever state it is in). `entry_content` / `obligation_content` return the deterministic content, `entry_digest` / `obligation_digest` are `cns.gate.subject_digest` over it, and `binds(result, record)` says whether a `cns.gate.GateResult` was issued against exactly that record. A verdict about one record does not bind to another, so the same decision recorded twice binds to its own place in the chain. Set-like tuples on the decision are sorted so order cannot change a digest; the decision's `audit_hash` is not bound.
+
+It is **binding only**, and deliberately not a gate. There is no mapping from an entry or an obligation to `PASS`, `RETRY` or `TERMINAL_BREACH`: a ledger entry is a custody record and an obligation is a lifecycle state, and turning either into a gate outcome would invent a meaning delta does not have. Fairness findings are not bound (a four-fifths flag is a screening signal, derived from obligations that can be). It also does not verify the chain; `verify_chain_integrity` does that.
+
+The CNS digest is separate from the ledger's `immutable_hash` chain and from the obligation's `decision_fingerprint` link, both unchanged and unaware of CNS. It binds a verdict to the record exactly as stored, chain hashes included.
+
 Apache-2.0.
