@@ -21,7 +21,7 @@ ENV = {
     "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     "PYTHONDONTWRITEBYTECODE": "1",
 }
-EXTRA_PIN = "cns @ git+https://github.com/wking53214/CNS.git@v1.8.0"
+EXTRA_PIN = "cns @ git+https://github.com/wking53214/CNS.git@v1.9.0"
 
 
 def run(code: str, *, block: bool = True) -> subprocess.CompletedProcess:
