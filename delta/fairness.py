@@ -30,6 +30,7 @@ omitted rather than guessed at. A caller needing that binding attaches
 it externally.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Mapping
 
@@ -59,6 +60,11 @@ class CohortDecision:
                 raise ValueError(
                     f"CohortDecision({self.subject_id!r}): group_distribution[{group!r}] "
                     f"must be a number, got {type(prob).__name__}"
+                )
+            if not math.isfinite(prob):
+                raise ValueError(
+                    f"CohortDecision({self.subject_id!r}): group_distribution[{group!r}]="
+                    f"{prob!r} is not finite; a probability must be a finite number"
                 )
             if prob < 0:
                 raise ValueError(

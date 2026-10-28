@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from delta.fairness import (
@@ -168,3 +170,9 @@ def test_negligible_weight_group_excluded():
     findings = check_statistical_outcome_equity(cohort)
     for f in findings:
         assert f.evidence.get("group") != "group_c"
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_cohort_decision_rejects_non_finite_group_weight(bad):
+    with pytest.raises(ValueError):
+        CohortDecision("s", True, {"a": bad})
