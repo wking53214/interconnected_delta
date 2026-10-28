@@ -272,3 +272,24 @@ def test_horizon_honored_counts_by_state_and_overdue():
     assert counts["RESOLVED"] == 1
     assert counts["ABANDONED"] == 1
     assert counts["overdue"] == 1  # only open_ob is overdue at DAY*2
+
+
+# --- state transitions ---
+
+def test_terminal_states_reject_further_transitions():
+    rule = MaturationRule(kind="k", horizon_seconds=DAY)
+    ob = open_obligation("o", "fp", "d", rule, opened_at=0.0)
+    done = resolve(ob, DAY, {"x": 1}, PROVENANCE_VERIFIED, favorable=True)
+
+    with pytest.raises(OutcomeIntegrityError):
+        resolve(done, DAY + 1, {"x": 2}, PROVENANCE_VERIFIED, favorable=False)
+    with pytest.raises(OutcomeIntegrityError):
+        abandon(done, REASON_DECISION_SUPERSEDED, DAY + 1)
+    with pytest.raises(OutcomeIntegrityError):
+        stay_open(done, REASON_NOT_YET_DUE)
+
+    gone = abandon(ob, REASON_DECISION_SUPERSEDED, DAY)
+    with pytest.raises(OutcomeIntegrityError):
+        resolve(gone, DAY + 1, {"x": 1}, PROVENANCE_VERIFIED)
+    with pytest.raises(OutcomeIntegrityError):
+        stay_open(gone, REASON_NOT_YET_DUE)
