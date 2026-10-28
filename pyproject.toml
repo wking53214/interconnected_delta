@@ -5,8 +5,8 @@ description = "Records beta.Decisions in a hash-chained ledger, tracks outcome o
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "zeta @ git+https://github.com/wking53214/interconnected_zeta",
-    "beta @ git+https://github.com/wking53214/interconnected_beta",
+    "zeta @ git+https://github.com/wking53214/interconnected_zeta@4ba70f621ef40d53a5004809a569303707788cd0",
+    "beta @ git+https://github.com/wking53214/interconnected_beta@0507ebebc191c3e6a9997fcf6190918311717e0e",
 ]
 
 [project.optional-dependencies]
