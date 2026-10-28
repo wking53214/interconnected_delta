@@ -46,7 +46,9 @@ What the content holds, and what it leaves out
 ----------------------------------------------
 A ledger entry binds every field of the entry and of its decision, except the
 decision's ``audit_hash`` (a pointer into a ledger, never part of what was
-decided). This module deliberately does not reuse beta's connector or the
+decided) and its ``confidence_basis`` (a label beta derives from the matched
+rule, kept out so digests recorded before beta added it stay stable, exactly
+as beta's own connector does). This module deliberately does not reuse beta's connector or the
 ledger's private canonical form: beta may be installed without a connector, and
 the ledger's hashed subset is its own business. The decision's set-like tuples
 (``triggered_by_locks``, ``triggered_by_keys``, ``newly_triggered_locks``) are

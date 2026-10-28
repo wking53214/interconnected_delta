@@ -191,7 +191,7 @@ DECISION_CHANGES = {
     "reversal_conditions": ("sepsis_lock closes",),
     "instructions": "Do something else.",
 }
-DECISION_NOT_BOUND = {"audit_hash"}
+DECISION_NOT_BOUND = {"audit_hash", "confidence_basis"}
 
 
 def test_every_entry_and_decision_field_is_either_bound_or_deliberately_not():
