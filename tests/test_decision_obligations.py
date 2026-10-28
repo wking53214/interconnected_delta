@@ -148,3 +148,20 @@ def test_multiple_decision_ids_with_different_rules():
 
     assert loan_ob.obligation_kind == "loan_performance"
     assert claim_ob.obligation_kind == "claim_cost"
+
+
+def test_returned_obligations_do_not_alias_tracker_state():
+    tracker = DecisionObligationTracker({"loan_approve": MaturationRule("loan_performance", DAY)})
+    opened = tracker.open_for_decision(make_decision(), domain="mortgage", opened_at=0.0)
+
+    opened.detail["injected"] = True
+    assert "injected" not in tracker.get(opened.obligation_id).detail
+
+    resolved = tracker.resolve_obligation(
+        opened.obligation_id, DAY + 1, {"paid": True}, PROVENANCE_VERIFIED, favorable=True,
+    )
+    resolved.resolved_value["paid"] = False
+    assert tracker.get(opened.obligation_id).resolved_value == {"paid": True}
+
+    tracker.all()[0].detail["x"] = 1
+    assert "x" not in tracker.get(opened.obligation_id).detail
