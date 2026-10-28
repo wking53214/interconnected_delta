@@ -13,6 +13,7 @@ beta.DecisionRule): register once which decision_ids owe a maturing
 obligation and what kind, rather than a branch per decision type.
 """
 
+import dataclasses
 import threading
 from typing import Dict, List, Optional
 
@@ -27,6 +28,16 @@ from .obligation import (
     resolve,
     stay_open,
 )
+
+
+def _detached(obligation: OutcomeObligation) -> OutcomeObligation:
+    """Return a copy whose mutable fields do not alias the stored record,
+    so a caller holding a returned obligation cannot edit tracker state."""
+    return dataclasses.replace(
+        obligation,
+        detail=dict(obligation.detail),
+        resolved_value=None if obligation.resolved_value is None else dict(obligation.resolved_value),
+    )
 
 
 class DecisionObligationTracker:
@@ -74,7 +85,7 @@ class DecisionObligationTracker:
                 subject_id=decision.entity_id,
             )
             self._obligations[obligation_id] = obligation
-        return obligation
+        return _detached(obligation)
 
     def resolve_obligation(self, obligation_id: str, resolved_at: float,
                             resolved_value, provenance: str,
@@ -84,29 +95,29 @@ class DecisionObligationTracker:
             current = self._require_locked(obligation_id)
             updated = resolve(current, resolved_at, resolved_value, provenance, favorable, method)
             self._obligations[obligation_id] = updated
-        return updated
+        return _detached(updated)
 
     def keep_open(self, obligation_id: str, reason_code: str) -> OutcomeObligation:
         with self._lock:
             current = self._require_locked(obligation_id)
             updated = stay_open(current, reason_code)
             self._obligations[obligation_id] = updated
-        return updated
+        return _detached(updated)
 
     def abandon_obligation(self, obligation_id: str, reason_code: str, at: float) -> OutcomeObligation:
         with self._lock:
             current = self._require_locked(obligation_id)
             updated = abandon(current, reason_code, at)
             self._obligations[obligation_id] = updated
-        return updated
+        return _detached(updated)
 
     def get(self, obligation_id: str) -> OutcomeObligation:
         with self._lock:
-            return self._require_locked(obligation_id)
+            return _detached(self._require_locked(obligation_id))
 
     def all(self) -> List[OutcomeObligation]:
         with self._lock:
-            return list(self._obligations.values())
+            return [_detached(o) for o in self._obligations.values()]
 
     def portfolio_status(self, now: float) -> Dict[str, int]:
         return horizon_honored(self.all(), now)

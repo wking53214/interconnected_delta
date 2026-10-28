@@ -168,12 +168,23 @@ def open_obligation(obligation_id: str, decision_fingerprint: str, domain: str,
     )
 
 
+def _require_open(obligation: OutcomeObligation, action: str) -> None:
+    """Only an OPEN obligation can change state. RESOLVED and ABANDONED
+    are terminal; a second transition would silently rewrite history."""
+    if obligation.state != OUTCOME_OPEN:
+        raise OutcomeIntegrityError(obligation.obligation_id, [
+            f"cannot {action} an obligation in state {obligation.state!r}; "
+            f"only OPEN obligations transition"
+        ])
+
+
 def resolve(obligation: OutcomeObligation, resolved_at: float,
             resolved_value: Mapping[str, Any], provenance: str,
             favorable: Optional[bool] = None,
             method: Optional[str] = None) -> OutcomeObligation:
     """Close an obligation with a real result. Returns a NEW obligation;
     the original stays frozen (append-only)."""
+    _require_open(obligation, "resolve")
     closed = OutcomeObligation(
         obligation_id=obligation.obligation_id,
         decision_fingerprint=obligation.decision_fingerprint,
@@ -197,6 +208,7 @@ def resolve(obligation: OutcomeObligation, resolved_at: float,
 
 def stay_open(obligation: OutcomeObligation, reason_code: str) -> OutcomeObligation:
     """Restate an open obligation with a more specific reason."""
+    _require_open(obligation, "restate")
     restated = OutcomeObligation(
         obligation_id=obligation.obligation_id,
         decision_fingerprint=obligation.decision_fingerprint,
@@ -216,6 +228,7 @@ def stay_open(obligation: OutcomeObligation, reason_code: str) -> OutcomeObligat
 
 def abandon(obligation: OutcomeObligation, reason_code: str, at: float) -> OutcomeObligation:
     """Declare an obligation will never resolve. Recorded, not deleted."""
+    _require_open(obligation, "abandon")
     dropped = OutcomeObligation(
         obligation_id=obligation.obligation_id,
         decision_fingerprint=obligation.decision_fingerprint,
