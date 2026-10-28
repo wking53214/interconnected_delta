@@ -130,3 +130,22 @@ def test_two_ledgers_with_identical_decisions_produce_identical_chains():
         return ledger.chain_head
 
     assert build() == build()
+
+
+def test_verify_chain_integrity_false_if_trailing_entries_removed():
+    ledger = DecisionLedger()
+    for i in range(3):
+        ledger.append(make_decision(decision_id=f"d{i}", fp=f"fp{i}"))
+
+    ledger.entries.pop()
+
+    assert ledger.verify_chain_integrity() is False
+
+
+def test_verify_chain_integrity_false_if_all_entries_removed():
+    ledger = DecisionLedger()
+    ledger.append(make_decision())
+
+    ledger.entries.clear()
+
+    assert ledger.verify_chain_integrity() is False

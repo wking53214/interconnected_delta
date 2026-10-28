@@ -119,7 +119,7 @@ class DecisionLedger:
             if computed != entry.immutable_hash or entry.previous_hash != expected:
                 return False
             expected = entry.immutable_hash
-        return True
+        return expected == self.chain_head
 
     def __len__(self) -> int:
         return len(self.entries)
