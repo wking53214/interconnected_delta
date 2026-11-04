@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 CONTEXT_SCHEMA = "spine-context/1"
 _CONTEXT_FIELDS = ("schema", "entity_id", "event_id", "run_id")
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def check_context(context: Any) -> Dict[str, str]:
@@ -34,6 +34,6 @@ def check_digest(value: Any, what: str) -> str:
     """``value`` if it is a full lowercase SHA-256 digest; a TypeError or ValueError otherwise."""
     if not isinstance(value, str):
         raise TypeError(f"{what} must be a str digest; got {type(value).__name__}")
-    if not _SHA256.match(value):
+    if not _SHA256.fullmatch(value):
         raise ValueError(f"{what} is not a full lowercase SHA-256 digest")
     return value

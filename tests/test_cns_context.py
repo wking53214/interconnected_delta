@@ -136,3 +136,10 @@ def test_a_run_cannot_be_given_for_an_obligation():
     obligation = object.__new__(OutcomeObligation)
     with pytest.raises(ValueError, match="apply only to a ledger entry"):
         binds(verdict, obligation, **run())
+
+
+@pytest.mark.parametrize("bad", ["a" * 64 + "\n", "a" * 64 + " ", " " + "a" * 64])
+def test_a_decision_digest_with_whitespace_around_it_is_refused(bad):
+    """re.match with `$` accepts a trailing newline, so a 65 character string passed as a full SHA-256."""
+    with pytest.raises(ValueError, match="full lowercase SHA-256"):
+        entry_content(recorded(), **run(decision_digest=bad))
