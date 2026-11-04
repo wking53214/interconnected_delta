@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # The commits the runtime dependencies install. Moving one is a reviewed change.
-EXPECTED_BETA_PIN = "811c2f2bc01b72adc3c7eb0cd730bc0f8987b281"
+EXPECTED_BETA_PIN = "de10ca1b9a840155ef87908c97f6291087982e18"
 EXPECTED_ZETA_PIN = "e2394fff43e7e52451747364d037bac04fe02d85"
 
 
