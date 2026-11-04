@@ -43,6 +43,7 @@ CHANGED from the source, and from an earlier version of this file
 
 import hashlib
 import json
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -120,6 +121,7 @@ def _hash_dict(d: dict) -> str:
 
 class DecisionLedger:
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self.entries: List[LedgerEntry] = []
         self.chain_head: str = hashlib.sha256(_GENESIS_SEED).hexdigest()
 
@@ -138,7 +140,17 @@ class DecisionLedger:
         and event are hashed into the chain. Without a context behaviour is as it always was, plus the
         consistency check.
         """
-        decision.validate(check_fingerprint=context is not None)
+        # Exactly a beta.Decision, judged by beta's own validate: an object that supplies its own validate (a subclass
+        # that does nothing, a namespace with a lambda) would otherwise choose whether it is judged at all.
+        if type(decision) is not Decision:
+            raise TypeError(f"delta records beta.Decision only; got {type(decision).__name__}")
+        Decision.validate(decision, check_fingerprint=context is not None)
+        with self._lock:
+            return self._append_locked(decision, timestamp, context)
+
+    def _append_locked(
+        self, decision: Decision, timestamp: Optional[datetime], context: Optional[Mapping]
+    ) -> LedgerEntry:
         run_id = event_id = None
         if context is not None:
             ctx = check_context(context)
@@ -148,10 +160,17 @@ class DecisionLedger:
                 )
             run_id, event_id = ctx["run_id"], ctx["event_id"]
             for earlier in self.entries:
-                if earlier.run_id == run_id and earlier.decision.decision_fingerprint == decision.decision_fingerprint:
+                if earlier.decision.decision_fingerprint != decision.decision_fingerprint:
+                    continue
+                if earlier.run_id == run_id:
                     raise DuplicateRecordError(
                         f"run {run_id!r} already recorded a Decision with fingerprint "
                         f"{decision.decision_fingerprint[:12]}..."
+                    )
+                if earlier.event_id == event_id:
+                    raise DuplicateRecordError(
+                        f"event {event_id!r} already has this Decision recorded under run {earlier.run_id!r}; "
+                        f"an event is recorded once, whatever run it is brought back in"
                     )
         ts = timestamp if timestamp is not None else decision.timestamp
         audit_id = hashlib.sha256(
