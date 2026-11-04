@@ -72,17 +72,18 @@ def test_the_same_event_and_decision_under_a_new_run_id_is_refused():
     ledger = DecisionLedger()
     ledger.append(decision(), context=CTX)
     head, size = ledger.chain_head, len(ledger)
-    with pytest.raises(DuplicateRecordError, match="event 'ev-1' already has this Decision recorded under run 'run-1'"):
+    with pytest.raises(DuplicateRecordError, match="event 'ev-1' already has a Decision recorded under run 'run-1'"):
         ledger.append(decision(), context={**CTX, "run_id": "run-2"})
     assert (ledger.chain_head, len(ledger)) == (head, size)
 
 
-def test_a_new_event_or_a_different_decision_for_the_same_event_is_recorded():
+def test_a_new_event_is_recorded_but_a_different_decision_for_the_same_event_is_refused():
     ledger = DecisionLedger()
     ledger.append(decision(), context=CTX)
     ledger.append(decision(), context={**CTX, "run_id": "run-2", "event_id": "ev-2"})
-    ledger.append(decision(keys=("respiratory_distress",)), context={**CTX, "run_id": "run-3"})
-    assert len(ledger) == 3 and ledger.verify_chain_integrity()
+    with pytest.raises(DuplicateRecordError):
+        ledger.append(decision(keys=("respiratory_distress",)), context={**CTX, "run_id": "run-3"})
+    assert len(ledger) == 2 and ledger.verify_chain_integrity()
 
 
 # --- 3. appends from several threads leave a chain that verifies ---------------------------------------------------

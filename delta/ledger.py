@@ -65,7 +65,19 @@ class LedgerCheckpoint:
 
 
 class DuplicateRecordError(ValueError):
-    """The same Decision (by fingerprint) was already recorded under this pipeline run."""
+    """The event (or the run) already has a Decision recorded: an event is recorded once, whatever run it is brought back in."""
+
+
+class StaleDecisionError(ValueError):
+    """The Decision is older than the newest Decision already recorded for the same entity."""
+
+
+class ContextRequiredError(ValueError):
+    """This ledger requires every Decision to be recorded under a pipeline context, and none was given."""
+
+
+class LedgerCorruptError(ValueError):
+    """The ledger's head does not match its last entry, so nothing more is appended to it."""
 
 
 @dataclass(frozen=True)
@@ -124,7 +136,10 @@ def _hash_dict(d: dict) -> str:
 
 
 class DecisionLedger:
-    def __init__(self) -> None:
+    def __init__(self, require_context: bool = False) -> None:
+        # require_context=True: every append must carry a pipeline context. Left False the ledger still records an
+        # unbound Decision as it always did, but such an entry has no run, and CNS's strict check refuses it.
+        self.require_context = require_context
         self._lock = threading.Lock()
         self.entries: List[LedgerEntry] = []
         self.chain_head: str = hashlib.sha256(_GENESIS_SEED).hexdigest()
@@ -155,7 +170,10 @@ class DecisionLedger:
     def _append_locked(
         self, decision: Decision, timestamp: Optional[datetime], context: Optional[Mapping]
     ) -> LedgerEntry:
+        self._check_head()
         run_id = event_id = None
+        if context is None and self.require_context:
+            raise ContextRequiredError("this ledger requires a context: record the Decision under a pipeline run")
         if context is not None:
             ctx = check_context(context)
             if decision.entity_id != ctx["entity_id"]:
@@ -163,19 +181,8 @@ class DecisionLedger:
                     f"the Decision is about {decision.entity_id!r} but the context is about {ctx['entity_id']!r}"
                 )
             run_id, event_id = ctx["run_id"], ctx["event_id"]
-            for earlier in self.entries:
-                if earlier.decision.decision_fingerprint != decision.decision_fingerprint:
-                    continue
-                if earlier.run_id == run_id:
-                    raise DuplicateRecordError(
-                        f"run {run_id!r} already recorded a Decision with fingerprint "
-                        f"{decision.decision_fingerprint[:12]}..."
-                    )
-                if earlier.event_id == event_id:
-                    raise DuplicateRecordError(
-                        f"event {event_id!r} already has this Decision recorded under run {earlier.run_id!r}; "
-                        f"an event is recorded once, whatever run it is brought back in"
-                    )
+            self._check_event_policy(run_id, event_id)
+            self._check_not_stale(decision)
         ts = timestamp if timestamp is not None else decision.timestamp
         audit_id = hashlib.sha256(
             f"{len(self.entries)}:{decision.decision_fingerprint}".encode()
@@ -197,6 +204,47 @@ class DecisionLedger:
         self.chain_head = immutable_hash
         self.entries.append(entry)
         return entry
+
+    def _check_head(self) -> None:
+        """O(1): the head must name the last entry (or genesis for an empty ledger). A full re-verification on every
+        append would make recording quadratic; this catches a head and an entry list that were left disagreeing, not a
+        chain someone rewrote and re-headed (that is what a checkpoint held outside the ledger is for)."""
+        want = self.entries[-1].immutable_hash if self.entries else hashlib.sha256(_GENESIS_SEED).hexdigest()
+        if self.chain_head != want:
+            raise LedgerCorruptError(
+                "the ledger's head does not match its last entry; nothing more is appended to a chain that does not verify"
+            )
+
+    def _check_event_policy(self, run_id: str, event_id: str) -> None:
+        """A run belongs to exactly one event, and an event has exactly one Decision."""
+        for earlier in self.entries:
+            if earlier.run_id == run_id:
+                if earlier.event_id != event_id:
+                    raise ValueError(f"run {run_id!r} belongs to event {earlier.event_id!r}, not {event_id!r}")
+                raise DuplicateRecordError(f"run {run_id!r} already recorded a Decision for event {event_id!r}")
+            if earlier.event_id == event_id:
+                raise DuplicateRecordError(
+                    f"event {event_id!r} already has a Decision recorded under run {earlier.run_id!r}; "
+                    f"an event is recorded once, whatever run it is brought back in (decide again under a new event)"
+                )
+
+    def _check_not_stale(self, decision: Decision) -> None:
+        """A Decision is never older than the newest one recorded for its entity."""
+        for earlier in self.entries:
+            if earlier.decision.entity_id != decision.entity_id:
+                continue
+            try:
+                older = decision.timestamp < earlier.decision.timestamp
+            except TypeError as exc:
+                raise ValueError(
+                    "Decision timestamps must be all timezone-aware or all naive; "
+                    f"got {decision.timestamp!r} after {earlier.decision.timestamp!r}"
+                ) from exc
+            if older:
+                raise StaleDecisionError(
+                    f"the Decision ({decision.timestamp.isoformat()}) is older than the newest Decision recorded for "
+                    f"{decision.entity_id!r} ({earlier.decision.timestamp.isoformat()})"
+                )
 
     def verify_chain_integrity(self) -> bool:
         expected = hashlib.sha256(_GENESIS_SEED).hexdigest()
