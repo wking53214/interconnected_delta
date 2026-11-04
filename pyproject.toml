@@ -2,11 +2,11 @@
 name = "delta"
 version = "0.1.0"
 description = "Records beta.Decisions in a hash-chained ledger, tracks outcome obligations, and feeds resolved outcomes into cohort-level fairness screening."
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "zeta @ git+https://github.com/wking53214/interconnected_zeta@e2394fff43e7e52451747364d037bac04fe02d85",
-    "beta @ git+https://github.com/wking53214/interconnected_beta@811c2f2bc01b72adc3c7eb0cd730bc0f8987b281",
+    "zeta @ git+https://github.com/wking53214/interconnected_zeta@f416b02abe75f808041718bdffb85b26345f21c4",
+    "beta @ git+https://github.com/wking53214/interconnected_beta@ffe2fcfbfedd04170ee7f42122e55450cecd6b69",
 ]
 
 [project.optional-dependencies]

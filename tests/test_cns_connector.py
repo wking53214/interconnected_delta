@@ -192,6 +192,7 @@ DECISION_CHANGES = {
     "reasoning": "a different explanation",
     "reversal_conditions": ("sepsis_lock closes",),
     "instructions": "Do something else.",
+    "keyset_fingerprint": "a" * 64,
 }
 DECISION_NOT_BOUND = {"audit_hash", "confidence_basis"}
 
@@ -199,7 +200,7 @@ DECISION_NOT_BOUND = {"audit_hash", "confidence_basis"}
 def test_every_entry_and_decision_field_is_either_bound_or_deliberately_not():
     assert {f.name for f in dataclasses.fields(LedgerEntry)} == set(ENTRY_CHANGES) | {"decision"}
     assert {f.name for f in dataclasses.fields(Decision)} == set(DECISION_CHANGES) | DECISION_NOT_BOUND
-    content = entry_content(LedgerEntry("a", T0, Decision("e", "d", "x", T0, 1.0), "p", "h", "run-1", "ev-1"))
+    content = entry_content(LedgerEntry("a", T0, Decision("e", "d", "x", T0, 1.0, keyset_fingerprint="b" * 64), "p", "h", "run-1", "ev-1"))
     assert set(content) == set(ENTRY_CHANGES) | {"decision"}
     assert set(content["decision"]) == set(DECISION_CHANGES)
 

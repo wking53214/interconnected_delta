@@ -161,7 +161,7 @@ def _plain(value: Any, label: str) -> Any:
 def _decision_content(decision: Any) -> Dict[str, Any]:
     if not isinstance(decision, Decision):
         raise TypeError(f"a ledger entry must hold a beta.Decision; got {type(decision).__name__}")
-    return {
+    content = {
         "entity_id": decision.entity_id,
         "decision_id": decision.decision_id,
         "decision": decision.decision,
@@ -174,7 +174,11 @@ def _decision_content(decision: Any) -> Dict[str, Any]:
         "reasoning": decision.reasoning,
         "reversal_conditions": list(decision.reversal_conditions),
         "instructions": decision.instructions,
-    }
+    }  # type: Dict[str, Any]
+    # Present only when the Decision recorded one, exactly as beta's own connector does it.
+    if getattr(decision, "keyset_fingerprint", ""):
+        content["keyset_fingerprint"] = check_digest(decision.keyset_fingerprint, "Decision.keyset_fingerprint")
+    return content
 
 
 def entry_content(
