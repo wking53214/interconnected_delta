@@ -55,6 +55,14 @@ from .context import check_context
 _GENESIS_SEED = b"INTERCONNECTED_DELTA_GENESIS"
 
 
+@dataclass(frozen=True)
+class LedgerCheckpoint:
+    """The length and head of a ledger at one moment. Only as trustworthy as the place it is kept."""
+
+    length: int
+    head: str
+
+
 class DuplicateRecordError(ValueError):
     """The same Decision (by fingerprint) was already recorded under this pipeline run."""
 
@@ -179,6 +187,31 @@ class DecisionLedger:
                 return False
             expected = entry.immutable_hash
         return expected == self.chain_head
+
+    def checkpoint(self) -> LedgerCheckpoint:
+        """The ledger's current length and head, to be held somewhere its holder cannot rewrite.
+
+        verify_chain_integrity compares the chain with the ledger's own chain_head, so whoever can edit the
+        entries can reset the head, or recompute the whole chain, and it still verifies. A checkpoint held
+        elsewhere does not move with them. This module cannot say where to keep it: that is the caller's.
+        """
+        return LedgerCheckpoint(len(self.entries), self.chain_head)
+
+    def verify_against(self, checkpoint: LedgerCheckpoint) -> bool:
+        """Whether the whole chain verifies AND still contains the history the checkpoint recorded.
+
+        The ledger may have grown since; it may not have been truncated, reordered or rewritten up to the
+        checkpoint. False for any checkpoint that does not fit (negative, beyond the ledger, wrong head).
+        """
+        if not isinstance(checkpoint, LedgerCheckpoint):
+            raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
+        length = checkpoint.length
+        if isinstance(length, bool) or not isinstance(length, int) or length < 0 or length > len(self.entries):
+            return False
+        if not self.verify_chain_integrity():
+            return False
+        anchor = hashlib.sha256(_GENESIS_SEED).hexdigest() if length == 0 else self.entries[length - 1].immutable_hash
+        return anchor == checkpoint.head
 
     def __len__(self) -> int:
         return len(self.entries)
