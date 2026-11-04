@@ -74,6 +74,7 @@ from typing import Any, Dict, Optional
 
 from beta import Decision
 
+from .context import check_context, check_digest
 from .ledger import LedgerEntry
 from .obligation import OutcomeObligation
 
@@ -176,23 +177,62 @@ def _decision_content(decision: Any) -> Dict[str, Any]:
     }
 
 
-def entry_content(entry: LedgerEntry) -> Dict[str, Any]:
+def entry_content(
+    entry: LedgerEntry,
+    *,
+    context: Optional[Mapping] = None,
+    decision_digest: Optional[str] = None,
+) -> Dict[str, Any]:
     """The deterministic content a CNS verdict about ``entry`` is bound to.
 
     The recorded decision, the time it was recorded and its place in the chain.
     Only str, int, float, bool, None, list and dict with str keys, the types
     ``cns.gate.subject_digest`` accepts. Needs no CNS to build. Raises
     ``TypeError`` for anything that is not a :class:`delta.ledger.LedgerEntry`.
+
+    ``context`` (schema, entity_id, event_id, run_id) and ``decision_digest`` (beta's digest of the Decision, bound
+    to the same run) bind the entry to one pipeline run. They come together or not at all, and the entry must have
+    been recorded under that very run and event and be about that entity; the content then gains ``context`` and
+    ``decision_digest``. Without them it is exactly what it always was.
     """
     if not isinstance(entry, LedgerEntry):
         raise TypeError(f"expected a delta.ledger.LedgerEntry; got {type(entry).__name__}")
-    return {
+    if decision_digest is not None and context is None:
+        raise ValueError("decision_digest needs a context")
+    if context is not None and decision_digest is None:
+        raise ValueError("a context needs decision_digest, beta's digest of the Decision this entry recorded")
+    ctx = None if context is None else check_context(context)
+    if ctx is not None:
+        if entry.run_id is None:
+            raise ValueError("the ledger entry was recorded under no run, so it cannot be bound to one")
+        if entry.run_id != ctx["run_id"]:
+            raise ValueError(f"the ledger entry was recorded under run {entry.run_id!r} but the context is run {ctx['run_id']!r}")
+        if entry.event_id != ctx["event_id"]:
+            raise ValueError(
+                f"the ledger entry was recorded under event {entry.event_id!r} but the context is event {ctx['event_id']!r}")
+        if entry.decision.entity_id != ctx["entity_id"]:
+            raise ValueError(
+                f"the entry's Decision is about {entry.decision.entity_id!r} but the context is about {ctx['entity_id']!r}")
+        check_digest(decision_digest, "decision_digest")
+    content = {
         "audit_id": entry.audit_id,
         "timestamp": _instant(entry.timestamp, "a ledger entry timestamp"),
         "previous_hash": entry.previous_hash,
         "immutable_hash": entry.immutable_hash,
         "decision": _decision_content(entry.decision),
-    }
+    }  # type: Dict[str, Any]
+    # The run an entry was recorded under, present only when it has one, so an entry recorded without a
+    # context binds exactly as it always did.
+    for name in ("run_id", "event_id"):
+        value = getattr(entry, name)
+        if value is not None:
+            if not isinstance(value, str):
+                raise TypeError(f"a ledger entry {name} must be a str; got {type(value).__name__}")
+            content[name] = value
+    if ctx is not None:
+        content["context"] = ctx
+        content["decision_digest"] = decision_digest
+    return content
 
 
 def obligation_content(obligation: OutcomeObligation) -> Dict[str, Any]:
@@ -222,9 +262,11 @@ def obligation_content(obligation: OutcomeObligation) -> Dict[str, Any]:
     }
 
 
-def entry_digest(entry: LedgerEntry) -> str:
-    """``cns.gate.subject_digest`` of :func:`entry_content`. Pass it, with ``ENTRY_SUBJECT``, to ``GateResult.binds``."""
-    content = entry_content(entry)
+def entry_digest(entry: LedgerEntry, **run: Any) -> str:
+    """``cns.gate.subject_digest`` of :func:`entry_content`. Pass it, with ``ENTRY_SUBJECT``, to ``GateResult.binds``.
+
+    The keyword arguments are :func:`entry_content`'s ``context`` and ``decision_digest``."""
+    content = entry_content(entry, **run)
     return _cns_gate().subject_digest(content)
 
 
@@ -234,7 +276,7 @@ def obligation_digest(obligation: OutcomeObligation) -> str:
     return _cns_gate().subject_digest(content)
 
 
-def binds(result: Any, record: Any, *, subject: Optional[str] = None) -> bool:
+def binds(result: Any, record: Any, *, subject: Optional[str] = None, **run: Any) -> bool:
     """Whether ``result`` (a ``cns.gate.GateResult``) was issued against exactly ``record``.
 
     ``record`` is a ``LedgerEntry`` (default subject ``ENTRY_SUBJECT``) or an
@@ -247,8 +289,10 @@ def binds(result: Any, record: Any, *, subject: Optional[str] = None) -> bool:
     if not isinstance(result, gate.GateResult):
         raise TypeError(f"expected a cns.gate.GateResult; got {type(result).__name__}")
     if isinstance(record, LedgerEntry):
-        default, digest = ENTRY_SUBJECT, entry_digest(record)
+        default, digest = ENTRY_SUBJECT, entry_digest(record, **run)
     elif isinstance(record, OutcomeObligation):
+        if run:
+            raise ValueError("a context and decision_digest apply only to a ledger entry, not an obligation")
         default, digest = OBLIGATION_SUBJECT, obligation_digest(record)
     else:
         raise TypeError(

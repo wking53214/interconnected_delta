@@ -176,6 +176,8 @@ ENTRY_CHANGES = {
     "timestamp": T0 + timedelta(minutes=5),
     "previous_hash": "a" * 64,
     "immutable_hash": "b" * 64,
+    "run_id": "run-9",
+    "event_id": "ev-9",
 }
 DECISION_CHANGES = {
     "entity_id": "patient2",
@@ -197,7 +199,7 @@ DECISION_NOT_BOUND = {"audit_hash", "confidence_basis"}
 def test_every_entry_and_decision_field_is_either_bound_or_deliberately_not():
     assert {f.name for f in dataclasses.fields(LedgerEntry)} == set(ENTRY_CHANGES) | {"decision"}
     assert {f.name for f in dataclasses.fields(Decision)} == set(DECISION_CHANGES) | DECISION_NOT_BOUND
-    content = entry_content(LedgerEntry("a", T0, Decision("e", "d", "x", T0, 1.0), "p", "h"))
+    content = entry_content(LedgerEntry("a", T0, Decision("e", "d", "x", T0, 1.0), "p", "h", "run-1", "ev-1"))
     assert set(content) == set(ENTRY_CHANGES) | {"decision"}
     assert set(content["decision"]) == set(DECISION_CHANGES)
 

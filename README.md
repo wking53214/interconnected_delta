@@ -29,6 +29,9 @@ Unlike α/ζ/β (unifying duplicated patterns), δ is mostly **wiring of already
 - Canonical subset of a Decision (ids, timestamp, fingerprint, narrative, trigger names) is hashed; `immutable_hash = SHA-256(chain_head + hash(canonical))`.
 - Verification **recomputes** the chain. Stored hashes are not trusted.
 - In-memory `List[LedgerEntry]`.
+- `append` records exactly a `beta.Decision` (anything else, including a subclass or an object that merely has a `validate`, is a `TypeError`) and calls `Decision.validate()` on it first, with or without a context: a Decision whose confidence basis contradicts its keys, whose fields have the wrong types, or whose confidence is not a finite number in [0, 1], is refused and the ledger is unchanged. `append` holds a lock, so concurrent appends keep one chain; the public `entries` list itself is not protected.
+- **Pipeline run.** `append(decision, context=...)` takes a context (`schema`, `entity_id`, `event_id`, `run_id`, see `delta/context.py`). With it the Decision must be about the context's entity, its `decision_fingerprint` must match the Decision's own fields, and a Decision with the same fingerprint already recorded in the same run, or for the same `event_id` in any run, raises `DuplicateRecordError` (an event is recorded once, whatever run it is brought back in; a different Decision for the same event is recorded). The entry carries `run_id` and `event_id`, hashed into the chain only when set, so an entry recorded without a context hashes exactly as before. Without a context a repeat is accepted, as it always was.
+- **Checkpoint.** `checkpoint()` returns a frozen `LedgerCheckpoint(length, head)`; `verify_against(checkpoint)` is true only if the whole chain verifies and the entry at that length still hashes to that head. The ledger may grow past a checkpoint; truncation, reordering or a rewrite up to it fails. `verify_chain_integrity()` alone cannot tell: whoever can edit the entries can reset `chain_head`, or recompute the whole chain, and it verifies. That gap is measured, and `tests/test_ledger_checkpoint.py` records it. A checkpoint is only as trustworthy as the place it is kept, which delta does not provide.
 
 ### Obligations
 
@@ -51,9 +54,10 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 
 | Gap | Detail |
 |---|---|
-| In-memory ledger | Process death loses the chain. No file backend (observe-perceive `execution_guard` has JSONL; this does not). |
+| In-memory ledger | Process death loses the chain. No file backend (observe-perceive `execution_guard` has JSONL; this does not). No atomic append, no partial-write recovery, no external anchoring. Tamper-evidence holds only relative to a checkpoint kept outside the ledger. This is a reference ledger; production custody is sentinel_os. |
 | Dual custody | Live orchestrator writes Conservation Kernel ledger + `ExecutionLedger`, not `delta.DecisionLedger`. sentinel_os writes Postgres. Three custody stories. |
-| Unpinned git deps | `zeta @ git+.../interconnected_zeta`, `beta @ git+.../interconnected_beta`. |
+| Git dependencies | `zeta` and `beta` are pinned by commit in `pyproject.toml`; `tests/test_sibling_pins.py` holds the pins, so moving one is a reviewed change. They are not on a package index. |
+| Context is optional | Without a `context`, a repeat is accepted and no run is recorded. A caller that needs run boundaries must pass one; CNS's strict trace refuses an entry that has none. |
 | Fairness inputs | `group_distribution` must be supplied by the caller. δ does not estimate race/ethnicity (that's sentinel_os `bisg_estimator`, and even that is a proxy). |
 | `MIN_COHORT_SIZE_FOR_STATISTICAL_TEST` / `FOUR_FIFTHS_THRESHOLD` | Named constants. Four-fifths is the regulatory 0.8; cohort minimum is a tunable. |
 | No independent twin | sentinel_os twin is not ported. |
@@ -62,6 +66,8 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 ## 5. Core Invariants & Guarantees
 
 - Recomputation over trust for the hash chain.
+- Nothing is recorded that fails `Decision.validate()`; a failed append changes nothing.
+- A Decision is recorded once per pipeline run and once per event (when a context is given).
 - Fail-closed on unknown obligation ids.
 - Duplicate obligation open is an error, not a silent overwrite.
 - Indeterminate fairness beats a spurious pass on small/uninformative cohorts.
@@ -73,12 +79,13 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 from delta import DecisionLedger, DecisionObligationTracker, check_statistical_outcome_equity
 from delta.obligation import MaturationRule, OutcomeObligation
 from delta.fairness import CohortDecision, RegulatoryFinding
-# LedgerEntry: audit_id, timestamp, decision, immutable_hash, previous_hash
+# LedgerEntry: audit_id, timestamp, decision, previous_hash, immutable_hash, run_id, event_id (the last two None without a context)
 # OutcomeObligation: obligation_id, decision_fingerprint, domain, kind, opened_at, subject_id, status, ...
 ```
 
-`DecisionLedger.append(decision, timestamp=None) -> LedgerEntry`  
-`DecisionLedger.verify() -> bool` (recomputes)
+`DecisionLedger.append(decision, timestamp=None, *, context=None) -> LedgerEntry`  
+`DecisionLedger.verify_chain_integrity() -> bool` (recomputes the chain)  
+`DecisionLedger.checkpoint() -> LedgerCheckpoint` and `DecisionLedger.verify_against(checkpoint) -> bool`
 
 ## 7. Stack Integration Topology
 
@@ -100,6 +107,8 @@ delta does not need CNS. It has no runtime dependency on it, nothing in the pack
 It makes delta's two primary records **bindable**: a `LedgerEntry` (the recorded `beta.Decision`, the time it was recorded and its place in the chain: `audit_id`, `previous_hash`, `immutable_hash`) and an `OutcomeObligation` (every field, in whatever state it is in). `entry_content` / `obligation_content` return the deterministic content, `entry_digest` / `obligation_digest` are `cns.gate.subject_digest` over it, and `binds(result, record)` says whether a `cns.gate.GateResult` was issued against exactly that record. A verdict about one record does not bind to another, so the same decision recorded twice binds to its own place in the chain. Set-like tuples on the decision are sorted so order cannot change a digest; the decision's `audit_hash` is not bound.
 
 It is **binding only**, and deliberately not a gate. There is no mapping from an entry or an obligation to `PASS`, `RETRY` or `TERMINAL_BREACH`: a ledger entry is a custody record and an obligation is a lifecycle state, and turning either into a gate outcome would invent a meaning delta does not have. Fairness findings are not bound (a four-fifths flag is a screening signal, derived from obligations that can be). It also does not verify the chain; `verify_chain_integrity` does that.
+
+**Binding an entry to a run.** `entry_content`, `entry_digest` and `binds` take an optional `context` and `decision_digest` (beta's digest of the Decision, bound to the same run). They come together or not at all. The entry must have been recorded under that run and event and be about that entity, or the connector raises; the content then gains `context` and `decision_digest`. Without them every existing digest is unchanged. An entry's `run_id` and `event_id` appear in its content whenever it has them.
 
 The CNS digest is separate from the ledger's `immutable_hash` chain and from the obligation's `decision_fingerprint` link, both unchanged and unaware of CNS. It binds a verdict to the record exactly as stored, chain hashes included.
 
