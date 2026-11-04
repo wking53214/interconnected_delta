@@ -89,6 +89,10 @@ def _canonical_subset(
     event_id: Optional[str] = None,
 ) -> dict:
     subset = _decision_subset(entry_audit_id, timestamp, decision)
+    # The KeySet the Decision's lock results came from, hashed into the chain only when it has one, so a Decision
+    # recorded without it hashes exactly as before.
+    if getattr(decision, "keyset_fingerprint", ""):
+        subset["keyset_fingerprint"] = decision.keyset_fingerprint
     if run_id is not None:
         subset["run_id"] = run_id
     if event_id is not None:

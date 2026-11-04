@@ -1,8 +1,8 @@
 """The pipeline context delta records and binds: one run, named the same way by every stage.
 
 A plain mapping of four non-empty strings, validated here and nowhere else in delta. CNS publishes the contract
-(cns_composition.pipeline_context) and holds alpha's, zeta's, beta's and delta's copies of this check to it, so
-they cannot drift. This module imports nothing from CNS.
+(cns_composition.spine_trace.context_problems) and its integration runner holds alpha's, zeta's, beta's and delta's
+copies of this check to it, so they cannot drift unnoticed. This module imports nothing from CNS.
 """
 
 import re
