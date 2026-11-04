@@ -29,8 +29,8 @@ Unlike α/ζ/β (unifying duplicated patterns), δ is mostly **wiring of already
 - Canonical subset of a Decision (ids, timestamp, fingerprint, narrative, trigger names) is hashed; `immutable_hash = SHA-256(chain_head + hash(canonical))`.
 - Verification **recomputes** the chain. Stored hashes are not trusted.
 - In-memory `List[LedgerEntry]`.
-- `append` calls `Decision.validate()` first, with or without a context: a Decision whose confidence basis contradicts its keys, or whose confidence is not a finite number in [0, 1], is refused and the ledger is unchanged.
-- **Pipeline run.** `append(decision, context=...)` takes a context (`schema`, `entity_id`, `event_id`, `run_id`, see `delta/context.py`). With it the Decision must be about the context's entity, its `decision_fingerprint` must match the Decision's own fields, and a Decision with the same fingerprint already recorded in the same run raises `DuplicateRecordError`. The entry carries `run_id` and `event_id`, hashed into the chain only when set, so an entry recorded without a context hashes exactly as before. Without a context a repeat is accepted, as it always was.
+- `append` records exactly a `beta.Decision` (anything else, including a subclass or an object that merely has a `validate`, is a `TypeError`) and calls `Decision.validate()` on it first, with or without a context: a Decision whose confidence basis contradicts its keys, whose fields have the wrong types, or whose confidence is not a finite number in [0, 1], is refused and the ledger is unchanged. `append` holds a lock, so concurrent appends keep one chain; the public `entries` list itself is not protected.
+- **Pipeline run.** `append(decision, context=...)` takes a context (`schema`, `entity_id`, `event_id`, `run_id`, see `delta/context.py`). With it the Decision must be about the context's entity, its `decision_fingerprint` must match the Decision's own fields, and a Decision with the same fingerprint already recorded in the same run, or for the same `event_id` in any run, raises `DuplicateRecordError` (an event is recorded once, whatever run it is brought back in; a different Decision for the same event is recorded). The entry carries `run_id` and `event_id`, hashed into the chain only when set, so an entry recorded without a context hashes exactly as before. Without a context a repeat is accepted, as it always was.
 - **Checkpoint.** `checkpoint()` returns a frozen `LedgerCheckpoint(length, head)`; `verify_against(checkpoint)` is true only if the whole chain verifies and the entry at that length still hashes to that head. The ledger may grow past a checkpoint; truncation, reordering or a rewrite up to it fails. `verify_chain_integrity()` alone cannot tell: whoever can edit the entries can reset `chain_head`, or recompute the whole chain, and it verifies. That gap is measured, and `tests/test_ledger_checkpoint.py` records it. A checkpoint is only as trustworthy as the place it is kept, which delta does not provide.
 
 ### Obligations
@@ -67,7 +67,7 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 
 - Recomputation over trust for the hash chain.
 - Nothing is recorded that fails `Decision.validate()`; a failed append changes nothing.
-- A Decision is recorded once per pipeline run (when a context is given).
+- A Decision is recorded once per pipeline run and once per event (when a context is given).
 - Fail-closed on unknown obligation ids.
 - Duplicate obligation open is an error, not a silent overwrite.
 - Indeterminate fairness beats a spurious pass on small/uninformative cohorts.
