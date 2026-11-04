@@ -28,7 +28,7 @@ Three pieces, two different kinds of provenance:
 See each module's docstring for exactly what's extracted vs. new.
 """
 
-from .ledger import DecisionLedger, LedgerEntry
+from .ledger import DecisionLedger, DuplicateRecordError, LedgerEntry
 from .obligation import (
     ABANDONED_REASONS,
     OPEN_REASONS,
@@ -71,6 +71,7 @@ from .fairness import (
 
 __all__ = [
     "DecisionLedger",
+    "DuplicateRecordError",
     "LedgerEntry",
     "MaturationRule",
     "OutcomeObligation",

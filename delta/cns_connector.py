@@ -186,13 +186,22 @@ def entry_content(entry: LedgerEntry) -> Dict[str, Any]:
     """
     if not isinstance(entry, LedgerEntry):
         raise TypeError(f"expected a delta.ledger.LedgerEntry; got {type(entry).__name__}")
-    return {
+    content = {
         "audit_id": entry.audit_id,
         "timestamp": _instant(entry.timestamp, "a ledger entry timestamp"),
         "previous_hash": entry.previous_hash,
         "immutable_hash": entry.immutable_hash,
         "decision": _decision_content(entry.decision),
-    }
+    }  # type: Dict[str, Any]
+    # The run an entry was recorded under, present only when it has one, so an entry recorded without a
+    # context binds exactly as it always did.
+    for name in ("run_id", "event_id"):
+        value = getattr(entry, name)
+        if value is not None:
+            if not isinstance(value, str):
+                raise TypeError(f"a ledger entry {name} must be a str; got {type(value).__name__}")
+            content[name] = value
+    return content
 
 
 def obligation_content(obligation: OutcomeObligation) -> Dict[str, Any]:

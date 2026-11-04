@@ -43,13 +43,20 @@ CHANGED from the source, and from an earlier version of this file
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from beta import Decision
 
+from .context import check_context
+
 _GENESIS_SEED = b"INTERCONNECTED_DELTA_GENESIS"
+
+
+class DuplicateRecordError(ValueError):
+    """The same Decision (by fingerprint) was already recorded under this pipeline run."""
 
 
 @dataclass(frozen=True)
@@ -59,9 +66,28 @@ class LedgerEntry:
     decision: Decision
     previous_hash: str
     immutable_hash: str = ""
+    # The pipeline run this entry was recorded under, when it was given a context. Hashed into the chain only when
+    # set, so an entry recorded without one hashes exactly as it always did.
+    run_id: Optional[str] = None
+    event_id: Optional[str] = None
 
 
-def _canonical_subset(entry_audit_id: str, timestamp: datetime, decision: Decision) -> dict:
+def _canonical_subset(
+    entry_audit_id: str,
+    timestamp: datetime,
+    decision: Decision,
+    run_id: Optional[str] = None,
+    event_id: Optional[str] = None,
+) -> dict:
+    subset = _decision_subset(entry_audit_id, timestamp, decision)
+    if run_id is not None:
+        subset["run_id"] = run_id
+    if event_id is not None:
+        subset["event_id"] = event_id
+    return subset
+
+
+def _decision_subset(entry_audit_id: str, timestamp: datetime, decision: Decision) -> dict:
     return {
         "audit_id": entry_audit_id,
         "entry_timestamp": timestamp.isoformat(),
@@ -89,13 +115,42 @@ class DecisionLedger:
         self.entries: List[LedgerEntry] = []
         self.chain_head: str = hashlib.sha256(_GENESIS_SEED).hexdigest()
 
-    def append(self, decision: Decision, timestamp: Optional[datetime] = None) -> LedgerEntry:
+    def append(
+        self,
+        decision: Decision,
+        timestamp: Optional[datetime] = None,
+        *,
+        context: Optional[Mapping] = None,
+    ) -> LedgerEntry:
+        """Record a Decision. Refuses, and changes nothing, unless the Decision is internally consistent.
+
+        With a ``context`` (schema, entity_id, event_id, run_id) the entry is recorded under that run: the
+        Decision must be about the context's entity, its fingerprint must match its own fields, and a Decision
+        with the same fingerprint already recorded in the same run is refused (DuplicateRecordError). The run
+        and event are hashed into the chain. Without a context behaviour is as it always was, plus the
+        consistency check.
+        """
+        decision.validate(check_fingerprint=context is not None)
+        run_id = event_id = None
+        if context is not None:
+            ctx = check_context(context)
+            if decision.entity_id != ctx["entity_id"]:
+                raise ValueError(
+                    f"the Decision is about {decision.entity_id!r} but the context is about {ctx['entity_id']!r}"
+                )
+            run_id, event_id = ctx["run_id"], ctx["event_id"]
+            for earlier in self.entries:
+                if earlier.run_id == run_id and earlier.decision.decision_fingerprint == decision.decision_fingerprint:
+                    raise DuplicateRecordError(
+                        f"run {run_id!r} already recorded a Decision with fingerprint "
+                        f"{decision.decision_fingerprint[:12]}..."
+                    )
         ts = timestamp if timestamp is not None else decision.timestamp
         audit_id = hashlib.sha256(
             f"{len(self.entries)}:{decision.decision_fingerprint}".encode()
         ).hexdigest()[:16]
 
-        canonical = _canonical_subset(audit_id, ts, decision)
+        canonical = _canonical_subset(audit_id, ts, decision, run_id, event_id)
         combined = self.chain_head + _hash_dict(canonical)
         immutable_hash = hashlib.sha256(combined.encode()).hexdigest()
 
@@ -105,6 +160,8 @@ class DecisionLedger:
             decision=decision,
             previous_hash=self.chain_head,
             immutable_hash=immutable_hash,
+            run_id=run_id,
+            event_id=event_id,
         )
         self.chain_head = immutable_hash
         self.entries.append(entry)
@@ -113,7 +170,9 @@ class DecisionLedger:
     def verify_chain_integrity(self) -> bool:
         expected = hashlib.sha256(_GENESIS_SEED).hexdigest()
         for entry in self.entries:
-            canonical = _canonical_subset(entry.audit_id, entry.timestamp, entry.decision)
+            canonical = _canonical_subset(
+                entry.audit_id, entry.timestamp, entry.decision, entry.run_id, entry.event_id
+            )
             combined = entry.previous_hash + _hash_dict(canonical)
             computed = hashlib.sha256(combined.encode()).hexdigest()
             if computed != entry.immutable_hash or entry.previous_hash != expected:
