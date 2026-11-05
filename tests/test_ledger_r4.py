@@ -344,3 +344,41 @@ def test_rollback_is_rejected_against_a_later_checkpoint():
     ledger.chain_head = ledger.entries[-1].immutable_hash
     assert ledger.verify_chain_integrity() is True
     assert ledger.verify_against(later) is False
+
+
+# --- Step 7: a supplied entry timestamp may not be earlier than the previous entry's -------------------------------
+
+def test_an_equal_entry_timestamp_is_allowed():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(0), timestamp=T0)
+    ledger.append(decision(1), context=ctx(1), timestamp=T0)
+    ledger.append(decision(2), context=ctx(2), timestamp=T0 + timedelta(seconds=1))
+    assert len(ledger) == 3 and ledger.verify_chain_integrity()
+
+
+def test_an_earlier_entry_timestamp_is_refused_and_changes_nothing():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(0), timestamp=T0)
+    before = state(ledger)
+    with pytest.raises(ValueError, match="backdated"):
+        ledger.append(decision(1), context=ctx(1), timestamp=T0 - timedelta(seconds=1))
+    assert state(ledger) == before
+    ledger.append(decision(1), context=ctx(1), timestamp=T0)
+    assert len(ledger) == 2
+
+
+def test_mixing_naive_and_aware_entry_timestamps_is_a_value_error_not_a_type_error():
+    from datetime import timezone
+
+    ledger = DecisionLedger()
+    ledger.append(decision(0), timestamp=T0)
+    with pytest.raises(ValueError, match="timezone"):
+        ledger.append(decision(1), timestamp=T0.replace(tzinfo=timezone.utc))
+    assert len(ledger) == 1
+
+
+def test_an_entry_without_a_supplied_timestamp_keeps_its_old_behaviour():
+    ledger = DecisionLedger()
+    ledger.append(decision(0, timestamp=T0 + timedelta(days=1)))
+    ledger.append(decision(1, timestamp=T0))
+    assert len(ledger) == 2

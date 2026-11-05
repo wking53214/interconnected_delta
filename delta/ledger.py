@@ -199,6 +199,10 @@ class DecisionLedger:
             self._check_event_policy(run_id, event_id)
             self._check_not_stale(decision)
         ts = timestamp if timestamp is not None else decision.timestamp
+        if timestamp is not None:
+            # Only a caller-supplied entry time is judged: an entry that takes its Decision's time keeps the
+            # behaviour it always had (the per-entity stale rule governs Decision times).
+            self._check_not_backdated(ts)
         audit_id = hashlib.sha256(
             f"{len(self.entries)}:{decision.decision_fingerprint}".encode()
         ).hexdigest()[:16]
@@ -238,6 +242,22 @@ class DecisionLedger:
         if self.chain_head != want:
             raise LedgerCorruptError(
                 "the ledger's head does not match its last entry; nothing more is appended to a chain that does not verify"
+            )
+
+    def _check_not_backdated(self, ts: datetime) -> None:
+        """A caller-supplied entry timestamp is never earlier than the entry before it (equal is allowed)."""
+        if not self.entries:
+            return
+        previous = self.entries[-1].timestamp
+        try:
+            earlier = ts < previous
+        except TypeError as exc:
+            raise ValueError(
+                f"entry timestamps must be all timezone-aware or all naive; got {ts!r} after {previous!r}"
+            ) from exc
+        if earlier:
+            raise ValueError(
+                f"backdated entry: {ts.isoformat()} is earlier than the previous entry ({previous.isoformat()})"
             )
 
     def _check_event_policy(self, run_id: str, event_id: str) -> None:
