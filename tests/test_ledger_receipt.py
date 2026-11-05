@@ -14,7 +14,7 @@ if os.environ.get("DELTA_REQUIRE_CNS") == "1":
 else:
     gate = pytest.importorskip("cns.gate")
 
-from beta import Decision, decision_fingerprint  # noqa: E402
+from beta import Decision, content_fingerprint, decision_fingerprint  # noqa: E402
 
 from delta import DecisionLedger, LedgerCheckpoint  # noqa: E402
 from delta.cns_connector import entry_content, verification_receipt  # noqa: E402
@@ -33,7 +33,8 @@ def decision(i=0, **over):
     base["decision_fingerprint"] = decision_fingerprint({
         "entity_id": base["entity_id"], "decision_id": base["decision_id"], "decision": base["decision"],
         "triggered_by_locks": list(base["triggered_by_locks"]), "triggered_by_keys": list(base["triggered_by_keys"])})
-    return Decision(**base)
+    d = Decision(**base)
+    return dataclasses.replace(d, content_fingerprint=content_fingerprint(d))
 
 
 def recorded(n=1):

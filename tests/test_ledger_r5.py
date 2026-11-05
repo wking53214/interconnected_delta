@@ -4,8 +4,7 @@ import hashlib
 from datetime import datetime
 
 import pytest
-from beta import Decision, decision_fingerprint
-from beta.fingerprint import content_fingerprint
+from beta import Decision, content_fingerprint, decision_fingerprint
 
 from delta import DecisionLedger, DuplicateRecordError, LedgerCheckpoint
 from delta.context import CONTEXT_SCHEMA
@@ -25,7 +24,8 @@ def decision(i=0, **over):
     base["decision_fingerprint"] = decision_fingerprint({
         "entity_id": base["entity_id"], "decision_id": base["decision_id"], "decision": base["decision"],
         "triggered_by_locks": list(base["triggered_by_locks"]), "triggered_by_keys": list(base["triggered_by_keys"])})
-    return Decision(**base)
+    d = Decision(**base)
+    return dataclasses.replace(d, content_fingerprint=content_fingerprint(d))
 
 
 def state(ledger):
@@ -35,7 +35,7 @@ def state(ledger):
 # --- Step 12: replay does not depend on content_fingerprint ---------------------------------------------------------
 
 def test_a_replay_with_a_blanked_content_fingerprint_is_refused():
-    ledger = DecisionLedger(require_context=True)
+    ledger = DecisionLedger()
     d0 = decision()
     d = dataclasses.replace(d0, content_fingerprint=content_fingerprint(d0))
     ledger.append(d, context=ctx(1))
@@ -254,3 +254,23 @@ def test_replacing_the_entry_the_checkpoint_does_not_cover_is_refused():
     assert ledger.verify_chain_integrity() and ledger.verify_against(held)
     with pytest.raises(ValueError, match="not covered"):
         verification_receipt(ledger, held, context=ctx(2), decision_digest="a" * 64, index=1)
+
+
+# --- Step 17: a require_context ledger refuses a blanked content_fingerprint ---------------------------------------
+
+def test_a_required_context_ledger_refuses_a_blanked_content_fingerprint():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(1))
+    assert ledger.entries[0].decision.content_fingerprint
+    before = state(ledger)
+    blanked = dataclasses.replace(decision(1), content_fingerprint="")
+    with pytest.raises(ValueError, match="content_fingerprint.*downgrade"):
+        ledger.append(blanked, context=ctx(2))
+    assert state(ledger) == before
+
+
+def test_a_ledger_without_require_context_still_accepts_a_legacy_decision():
+    ledger = DecisionLedger()
+    ledger.append(dataclasses.replace(decision(0), content_fingerprint=""), context=ctx(1))
+    ledger.append(dataclasses.replace(decision(1), content_fingerprint=""))
+    assert len(ledger.entries) == 2 and ledger.verify_chain_integrity()

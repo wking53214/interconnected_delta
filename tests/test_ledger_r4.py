@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta
 
 import pytest
-from beta import Decision, decision_fingerprint
+from beta import Decision, content_fingerprint, decision_fingerprint
 
 from delta import DecisionLedger, DuplicateRecordError, LedgerCheckpoint
 from delta.context import CONTEXT_SCHEMA, check_context
@@ -30,7 +30,8 @@ def decision(i=0, **over):
     base["decision_fingerprint"] = decision_fingerprint({
         "entity_id": base["entity_id"], "decision_id": base["decision_id"], "decision": base["decision"],
         "triggered_by_locks": list(base["triggered_by_locks"]), "triggered_by_keys": list(base["triggered_by_keys"])})
-    return Decision(**base)
+    d = Decision(**base)
+    return dataclasses.replace(d, content_fingerprint=content_fingerprint(d))
 
 
 def state(ledger):
@@ -103,6 +104,7 @@ def test_mutating_the_callers_lists_cannot_reach_the_stored_decision():
     # beta coerces lists to tuples at construction; put the aliases back the way an attacker (or old Decision) could.
     object.__setattr__(d, "reversal_conditions", rc)
     object.__setattr__(d, "triggered_by_keys", keys)
+    object.__setattr__(d, "content_fingerprint", content_fingerprint(d))
     entry = ledger.append(d, context=CTX)
     held = ledger.checkpoint()
     snapshot = entry.decision
@@ -426,7 +428,7 @@ def test_content_fingerprint_is_part_of_the_replay_identity_only_when_set():
         ledger.append(_with_cf("second"), context=ctx(1))  # same decision_fingerprint and time, other content
     with pytest.raises(DuplicateRecordError, match="replay"):
         ledger.append(_with_cf("second"), context=ctx(2))
-    legacy = DecisionLedger(require_context=True)
+    legacy = DecisionLedger()
     legacy.append(decision(0, reasoning="first"), context=ctx(0))
     with pytest.raises(DuplicateRecordError, match="replay"):
         legacy.append(decision(0, reasoning="second"), context=ctx(1))  # legacy: fingerprint and time are all there is
@@ -453,7 +455,7 @@ def test_without_a_context_repeats_are_unchanged():
 # --- Step 9: content_fingerprint is hashed, present-when-set ------------------------------------------------------
 
 def _legacy():
-    return decision(0, reasoning="why")
+    return dataclasses.replace(decision(0, reasoning="why"), content_fingerprint="")
 
 
 def _with_cf_of(d):

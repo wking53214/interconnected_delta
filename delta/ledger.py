@@ -218,6 +218,11 @@ class DecisionLedger:
         run_id = event_id = None
         if context is None and self.require_context:
             raise ContextRequiredError("this ledger requires a context: record the Decision under a pipeline run")
+        if self.require_context and not decision.content_fingerprint:
+            raise ValueError(
+                "a ledger that requires a context refuses a Decision whose content_fingerprint is empty: "
+                "blanking it removes the integrity claim instead of changing it (downgrade)"
+            )
         if context is not None:
             ctx = check_context(context)
             if decision.entity_id != ctx["entity_id"]:
