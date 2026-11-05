@@ -97,6 +97,25 @@ class LedgerEntry:
     event_id: Optional[str] = None
 
 
+_STR_FIELDS = ("entity_id", "decision_id", "decision", "decision_fingerprint")
+
+
+def _check_exact_types(decision: Decision, timestamp: Optional[datetime]) -> None:
+    """The fields the ledger's policy compares must be exactly ``str`` and ``datetime``: a subclass can lie about its
+    own equality, ordering or text, and so be judged one way and recorded as another."""
+    for name in _STR_FIELDS:
+        if type(getattr(decision, name)) is not str:
+            raise TypeError(f"Decision.{name} must be exactly a str; got {type(getattr(decision, name)).__name__}")
+    for name in _TUPLE_FIELDS:
+        for item in getattr(decision, name):
+            if type(item) is not str:
+                raise TypeError(f"every element of Decision.{name} must be exactly a str; got {type(item).__name__}")
+    if type(decision.timestamp) is not datetime:
+        raise TypeError(f"Decision.timestamp must be exactly a datetime; got {type(decision.timestamp).__name__}")
+    if timestamp is not None and type(timestamp) is not datetime:
+        raise TypeError(f"timestamp must be exactly a datetime; got {type(timestamp).__name__}")
+
+
 def _canonical_subset(
     entry_audit_id: str,
     timestamp: datetime,
@@ -180,9 +199,11 @@ class DecisionLedger:
         # that does nothing, a namespace with a lambda) would otherwise choose whether it is judged at all.
         if type(decision) is not Decision:
             raise TypeError(f"delta records beta.Decision only; got {type(decision).__name__}")
-        Decision.validate(decision, check_fingerprint=context is not None)
-        # Store a copy whose list-typed fields are tuples, so a list the caller still holds cannot reach the record.
+        # Copy first, reading each caller-supplied iterable exactly once, then judge and record that copy only: an
+        # iterable that answers differently on a later read cannot be stored differently from what was validated.
         decision = dataclasses.replace(decision, **{name: tuple(getattr(decision, name)) for name in _TUPLE_FIELDS})
+        _check_exact_types(decision, timestamp)
+        Decision.validate(decision, check_fingerprint=context is not None)
         with self._lock:
             return self._append_locked(decision, timestamp, context)
 
