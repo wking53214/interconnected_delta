@@ -14,7 +14,7 @@ if os.environ.get("DELTA_REQUIRE_CNS") == "1":
 else:
     gate = pytest.importorskip("cns.gate")
 
-from beta import Decision, decision_fingerprint  # noqa: E402
+from beta import Decision, content_fingerprint, decision_fingerprint  # noqa: E402
 
 from delta import DecisionLedger, LedgerCheckpoint  # noqa: E402
 from delta.cns_connector import entry_content, verification_receipt  # noqa: E402
@@ -23,7 +23,7 @@ from delta.context import CONTEXT_SCHEMA  # noqa: E402
 T0 = datetime(2026, 1, 1, 12, 0, 0)
 CTX = {"schema": CONTEXT_SCHEMA, "entity_id": "p1", "event_id": "ev-1", "run_id": "run-1"}
 DD = gate.subject_digest({"label": "beta decision digest"})
-KEYS = ("schema", "entry_digest", "index", "ledger_length", "ledger_head", "checkpoint_length", "checkpoint_head", "context")
+KEYS = ("schema", "entry_digest", "index", "entry_hash", "previous_hash", "ledger_length", "ledger_head", "checkpoint_length", "checkpoint_head", "context")
 
 
 def decision(i=0, **over):
@@ -33,7 +33,8 @@ def decision(i=0, **over):
     base["decision_fingerprint"] = decision_fingerprint({
         "entity_id": base["entity_id"], "decision_id": base["decision_id"], "decision": base["decision"],
         "triggered_by_locks": list(base["triggered_by_locks"]), "triggered_by_keys": list(base["triggered_by_keys"])})
-    return Decision(**base)
+    d = Decision(**base)
+    return dataclasses.replace(d, content_fingerprint=content_fingerprint(d))
 
 
 def recorded(n=1):
@@ -64,8 +65,8 @@ def test_a_receipt_after_the_ledger_grew_past_the_checkpoint_names_the_requested
     cp = ledger.checkpoint()
     ledger.append(decision(1), context=ctx_n(2))
     first = verification_receipt(ledger, cp, context=CTX, decision_digest=DD, index=0)
-    last = verification_receipt(ledger, cp, context=ctx_n(2), decision_digest=DD)
-    assert (first["index"], last["index"], last["ledger_length"], last["checkpoint_length"]) == (0, 1, 2, 1)
+    last = verification_receipt(ledger, ledger.checkpoint(), context=ctx_n(2), decision_digest=DD)
+    assert (first["index"], last["index"], last["ledger_length"], last["checkpoint_length"]) == (0, 1, 2, 2)
     assert first["entry_digest"] != last["entry_digest"]
 
 

@@ -13,7 +13,7 @@ import dataclasses
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from beta import Decision, decision_fingerprint
+from beta import Decision, content_fingerprint, decision_fingerprint
 
 from delta import (ContextRequiredError, DecisionLedger, DuplicateRecordError, LedgerCorruptError,
                    StaleDecisionError)
@@ -32,7 +32,8 @@ def decision(keys=("septic_shock",), when=T0, entity="p1"):
     base["decision_fingerprint"] = decision_fingerprint({
         "entity_id": entity, "decision_id": "r", "decision": "ESCALATE",
         "triggered_by_locks": ["sepsis_lock"], "triggered_by_keys": list(keys)})
-    return Decision(**base)
+    d = Decision(**base)
+    return dataclasses.replace(d, content_fingerprint=content_fingerprint(d))
 
 
 # --- one Decision per event, one event per run ---------------------------------------------------------------------

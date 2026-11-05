@@ -67,6 +67,7 @@ Install with the extra:
 """
 
 import importlib
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from types import ModuleType
@@ -96,6 +97,7 @@ INSTALL_HINT = "pip install 'delta[cns] @ git+https://github.com/wking53214/inte
 
 ENTRY_SUBJECT = "delta.ledger_entry"
 OBLIGATION_SUBJECT = "delta.outcome_obligation"
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 RECEIPT_SCHEMA = "ledger-receipt/1"
 
 
@@ -321,9 +323,11 @@ def verification_receipt(
     """A plain dict stating what this ledger showed about one entry, for a verifier outside delta to check.
 
     Raises ``ValueError`` unless ``ledger.verify_chain_integrity()`` and ``ledger.verify_against(checkpoint)`` are both
-    true, so an empty, foreign, rolled-back or rewritten-past checkpoint, or a broken chain, yields no receipt. The
+    true, so an empty, foreign, rolled-back or rewritten-past checkpoint, or a broken chain, yields no receipt, and
+    unless ``0 <= index < checkpoint.length``: the independent checkpoint must cover the entry, and an entry newer
+    than the checkpoint has no independent evidence. The
     receipt carries the entry's CNS binding digest (``entry_content`` for that entry under ``context`` and
-    ``decision_digest``, so it cannot be reused for other content), the resolved non-negative ``index``, the ledger's
+    ``decision_digest``, so it cannot be reused for other content), the resolved non-negative ``index``, the entry's own ``immutable_hash`` (``entry_hash``) and ``previous_hash``, the ledger's
     length and head, the checkpoint's length and head, and a validated copy of the context.
 
     It is not signed and proves nothing by itself: anyone who can build a ledger and a checkpoint can build a
@@ -334,7 +338,14 @@ def verification_receipt(
         raise TypeError(f"expected a delta.ledger.DecisionLedger; got {type(ledger).__name__}")
     if not ledger.verify_chain_integrity():
         raise ValueError("the ledger's chain does not verify, so no receipt is issued")
-    if not ledger.verify_against(checkpoint):
+    if not isinstance(checkpoint, LedgerCheckpoint):
+        raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
+    # Read the checkpoint exactly once. Everything below, the verification and the receipt fields, uses only these
+    # snapshotted values, so an object that answers differently on a later read cannot put unverified values on a receipt.
+    length, head = checkpoint.length, checkpoint.head
+    if type(length) is not int or type(head) is not str or not _HEX64.fullmatch(head):
+        raise ValueError("the checkpoint is empty, foreign, mistyped or not contained in this ledger, so no receipt is issued")
+    if not ledger.verify_against(LedgerCheckpoint(length, head)):
         raise ValueError("the checkpoint is empty, foreign, mistyped or not contained in this ledger, so no receipt is issued")
     entries = list(ledger.entries)
     if type(index) is not int:
@@ -342,15 +353,23 @@ def verification_receipt(
     resolved = index + len(entries) if index < 0 else index
     if not 0 <= resolved < len(entries):
         raise ValueError(f"index {index} is out of range for a ledger of {len(entries)} entries")
+    if resolved >= length:
+        raise ValueError(
+            f"entry {resolved} is not covered by the checkpoint (length {length}); a checkpoint taken before an entry "
+            f"is no independent evidence about it, so no receipt is issued"
+        )
     ctx = check_context(context)
-    content = entry_content(entries[resolved], context=ctx, decision_digest=decision_digest)
+    entry = entries[resolved]
+    content = entry_content(entry, context=ctx, decision_digest=decision_digest)
     return {
         "schema": RECEIPT_SCHEMA,
         "entry_digest": gate.subject_digest(content),
         "index": resolved,
+        "entry_hash": entry.immutable_hash,
+        "previous_hash": entry.previous_hash,
         "ledger_length": len(entries),
         "ledger_head": ledger.chain_head,
-        "checkpoint_length": checkpoint.length,
-        "checkpoint_head": checkpoint.head,
+        "checkpoint_length": length,
+        "checkpoint_head": head,
         "context": ctx,
     }

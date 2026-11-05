@@ -97,6 +97,25 @@ class LedgerEntry:
     event_id: Optional[str] = None
 
 
+_STR_FIELDS = ("entity_id", "decision_id", "decision", "decision_fingerprint")
+
+
+def _check_exact_types(decision: Decision, timestamp: Optional[datetime]) -> None:
+    """The fields the ledger's policy compares must be exactly ``str`` and ``datetime``: a subclass can lie about its
+    own equality, ordering or text, and so be judged one way and recorded as another."""
+    for name in _STR_FIELDS:
+        if type(getattr(decision, name)) is not str:
+            raise TypeError(f"Decision.{name} must be exactly a str; got {type(getattr(decision, name)).__name__}")
+    for name in _TUPLE_FIELDS:
+        for item in getattr(decision, name):
+            if type(item) is not str:
+                raise TypeError(f"every element of Decision.{name} must be exactly a str; got {type(item).__name__}")
+    if type(decision.timestamp) is not datetime:
+        raise TypeError(f"Decision.timestamp must be exactly a datetime; got {type(decision.timestamp).__name__}")
+    if timestamp is not None and type(timestamp) is not datetime:
+        raise TypeError(f"timestamp must be exactly a datetime; got {type(timestamp).__name__}")
+
+
 def _canonical_subset(
     entry_audit_id: str,
     timestamp: datetime,
@@ -155,6 +174,8 @@ class DecisionLedger:
         # unbound Decision as it always did, but such an entry has no run, and CNS's strict check refuses it.
         self.require_context = require_context
         self._lock = threading.Lock()
+        # Set on the calling thread only while the sink runs (the lock is held then and is not reentrant).
+        self._sink_state = threading.local()
         self.entries: List[LedgerEntry] = []
         self.chain_head: str = hashlib.sha256(_GENESIS_SEED).hexdigest()
 
@@ -178,11 +199,15 @@ class DecisionLedger:
         """
         # Exactly a beta.Decision, judged by beta's own validate: an object that supplies its own validate (a subclass
         # that does nothing, a namespace with a lambda) would otherwise choose whether it is judged at all.
+        if getattr(self._sink_state, "active", False):
+            raise RuntimeError("append from inside a sink is not allowed")
         if type(decision) is not Decision:
             raise TypeError(f"delta records beta.Decision only; got {type(decision).__name__}")
-        Decision.validate(decision, check_fingerprint=context is not None)
-        # Store a copy whose list-typed fields are tuples, so a list the caller still holds cannot reach the record.
+        # Copy first, reading each caller-supplied iterable exactly once, then judge and record that copy only: an
+        # iterable that answers differently on a later read cannot be stored differently from what was validated.
         decision = dataclasses.replace(decision, **{name: tuple(getattr(decision, name)) for name in _TUPLE_FIELDS})
+        _check_exact_types(decision, timestamp)
+        Decision.validate(decision, check_fingerprint=context is not None)
         with self._lock:
             return self._append_locked(decision, timestamp, context)
 
@@ -193,6 +218,11 @@ class DecisionLedger:
         run_id = event_id = None
         if context is None and self.require_context:
             raise ContextRequiredError("this ledger requires a context: record the Decision under a pipeline run")
+        if self.require_context and not decision.content_fingerprint:
+            raise ValueError(
+                "a ledger that requires a context refuses a Decision whose content_fingerprint is empty: "
+                "blanking it removes the integrity claim instead of changing it (downgrade)"
+            )
         if context is not None:
             ctx = check_context(context)
             if decision.entity_id != ctx["entity_id"]:
@@ -226,7 +256,11 @@ class DecisionLedger:
             event_id=event_id,
         )
         if self._sink is not None:
-            self._sink(entry)
+            self._sink_state.active = True
+            try:
+                self._sink(entry)
+            finally:
+                self._sink_state.active = False
         # Every fallible step is above. The two updates below are made together: if either is interrupted the other
         # is put back, so head, entries and length are exactly as before and the next append works.
         previous_head, length = self.chain_head, len(self.entries)
@@ -280,11 +314,12 @@ class DecisionLedger:
 
     @staticmethod
     def _identity(decision: Decision) -> tuple:
-        return (decision.entity_id, decision.decision_fingerprint, decision.timestamp, getattr(decision, "content_fingerprint", ""))
+        return (decision.entity_id, decision.decision_fingerprint, decision.timestamp)
 
     def _check_not_replay(self, decision: Decision) -> None:
-        """The same Decision (entity, fingerprint, time, and content fingerprint when it has one) is not recorded again
-        under a new event or run: a fresh id does not make it a new decision. Reached only when the run and event are
+        """The same Decision (entity, fingerprint, time) is not recorded again under a new event or run: a fresh id
+        does not make it a new decision. The content fingerprint is deliberately not part of the key: blanking it (a
+        legacy Decision) must not turn a replay into a new record. Reached only when the run and event are
         both new, so the event and run messages above are unchanged."""
         want = self._identity(decision)
         for earlier in self.entries:
