@@ -7,7 +7,7 @@ import pytest
 from beta import Decision, decision_fingerprint
 from beta.fingerprint import content_fingerprint
 
-from delta import DecisionLedger, DuplicateRecordError
+from delta import DecisionLedger, DuplicateRecordError, LedgerCheckpoint
 from delta.context import CONTEXT_SCHEMA
 
 T0 = datetime(2026, 1, 1, 12, 0, 0)
@@ -166,3 +166,47 @@ def test_the_sink_flag_is_cleared_and_another_thread_still_appends():
     t.start()
     t.join(5)
     assert not t.is_alive() and len(ledger.entries) == 3 and len(seen) == 3
+
+
+# --- Step 15: the checkpoint is read once --------------------------------------------------------------------------
+
+class Lying(LedgerCheckpoint):
+    """Honest on the first read of each attribute, and lying on every later one."""
+
+    def __getattribute__(self, name):
+        if name in ("length", "head"):
+            counts = object.__getattribute__(self, "_counts")
+            counts[name] = counts.get(name, 0) + 1
+            if counts[name] > 1:
+                return {"length": 7, "head": "f" * 64}[name]
+        return object.__getattribute__(self, name)
+
+
+def _lying(cp):
+    liar = Lying(cp.length, cp.head)
+    object.__setattr__(liar, "_counts", {})
+    return liar
+
+
+def test_verify_against_reads_the_checkpoint_once():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(), context=ctx(1))
+    liar = _lying(ledger.checkpoint())
+    assert ledger.verify_against(liar) is True
+    assert object.__getattribute__(liar, "_counts") == {"length": 1, "head": 1}
+
+
+def test_a_receipt_states_exactly_the_values_that_were_verified():
+    pytest.importorskip("cns.gate")
+    from delta.cns_connector import verification_receipt
+
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(), context=ctx(1))
+    honest = ledger.checkpoint()
+    liar = _lying(honest)
+    try:
+        receipt = verification_receipt(ledger, liar, context=ctx(1), decision_digest="a" * 64)
+    except ValueError:
+        return
+    assert (receipt["checkpoint_length"], receipt["checkpoint_head"]) == (honest.length, honest.head)
+    assert object.__getattribute__(liar, "_counts") == {"length": 1, "head": 1}

@@ -67,6 +67,7 @@ Install with the extra:
 """
 
 import importlib
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from types import ModuleType
@@ -96,6 +97,7 @@ INSTALL_HINT = "pip install 'delta[cns] @ git+https://github.com/wking53214/inte
 
 ENTRY_SUBJECT = "delta.ledger_entry"
 OBLIGATION_SUBJECT = "delta.outcome_obligation"
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 RECEIPT_SCHEMA = "ledger-receipt/1"
 
 
@@ -334,7 +336,14 @@ def verification_receipt(
         raise TypeError(f"expected a delta.ledger.DecisionLedger; got {type(ledger).__name__}")
     if not ledger.verify_chain_integrity():
         raise ValueError("the ledger's chain does not verify, so no receipt is issued")
-    if not ledger.verify_against(checkpoint):
+    if not isinstance(checkpoint, LedgerCheckpoint):
+        raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
+    # Read the checkpoint exactly once. Everything below, the verification and the receipt fields, uses only these
+    # snapshotted values, so an object that answers differently on a later read cannot put unverified values on a receipt.
+    length, head = checkpoint.length, checkpoint.head
+    if type(length) is not int or type(head) is not str or not _HEX64.fullmatch(head):
+        raise ValueError("the checkpoint is empty, foreign, mistyped or not contained in this ledger, so no receipt is issued")
+    if not ledger.verify_against(LedgerCheckpoint(length, head)):
         raise ValueError("the checkpoint is empty, foreign, mistyped or not contained in this ledger, so no receipt is issued")
     entries = list(ledger.entries)
     if type(index) is not int:
@@ -350,7 +359,7 @@ def verification_receipt(
         "index": resolved,
         "ledger_length": len(entries),
         "ledger_head": ledger.chain_head,
-        "checkpoint_length": checkpoint.length,
-        "checkpoint_head": checkpoint.head,
+        "checkpoint_length": length,
+        "checkpoint_head": head,
         "context": ctx,
     }
