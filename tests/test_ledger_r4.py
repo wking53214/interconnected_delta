@@ -382,3 +382,68 @@ def test_an_entry_without_a_supplied_timestamp_keeps_its_old_behaviour():
     ledger.append(decision(0, timestamp=T0 + timedelta(days=1)))
     ledger.append(decision(1, timestamp=T0))
     assert len(ledger) == 2
+
+
+# --- Step 8: replay of the same Decision under a fresh event or run ------------------------------------------------
+
+def test_the_same_decision_under_a_fresh_event_and_run_is_a_replay_and_changes_nothing():  # attack row 12b
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(0))
+    before = state(ledger)
+    with pytest.raises(DuplicateRecordError, match="replay"):
+        ledger.append(decision(0), context=ctx(1))
+    assert state(ledger) == before
+    ledger.append(decision(1), context=ctx(1))  # a different decision under that event is fine
+    assert len(ledger) == 2
+
+
+def test_a_replay_is_caught_for_an_equal_copy_not_only_the_same_object():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(0))
+    with pytest.raises(DuplicateRecordError, match="replay"):
+        ledger.append(dataclasses.replace(decision(0)), context=ctx(1))
+
+
+def test_a_different_timestamp_or_entity_or_content_fingerprint_is_not_a_replay():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(0))
+    ledger.append(decision(0, timestamp=T0 + timedelta(hours=1)), context=ctx(1))
+    ledger.append(decision(0, entity_id="p2"), context={**ctx(2), "entity_id": "p2"})
+    assert len(ledger) == 3
+
+
+def _with_cf(reasoning):
+    from beta import content_fingerprint
+
+    d = decision(0, reasoning=reasoning)
+    return dataclasses.replace(d, content_fingerprint=content_fingerprint(d))
+
+
+def test_content_fingerprint_is_part_of_the_replay_identity_only_when_set():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(_with_cf("first"), context=ctx(0))
+    ledger.append(_with_cf("second"), context=ctx(1))  # same decision_fingerprint and time, other content
+    with pytest.raises(DuplicateRecordError, match="replay"):
+        ledger.append(_with_cf("second"), context=ctx(2))
+    legacy = DecisionLedger(require_context=True)
+    legacy.append(decision(0, reasoning="first"), context=ctx(0))
+    with pytest.raises(DuplicateRecordError, match="replay"):
+        legacy.append(decision(0, reasoning="second"), context=ctx(1))  # legacy: fingerprint and time are all there is
+
+
+def test_the_existing_event_and_run_messages_are_unchanged():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(0))
+    with pytest.raises(DuplicateRecordError, match="already recorded a Decision for event"):
+        ledger.append(decision(0), context=ctx(0))
+    with pytest.raises(DuplicateRecordError, match="an event is recorded once"):
+        ledger.append(decision(0), context={**ctx(0), "run_id": "run-9"})
+    with pytest.raises(ValueError, match="belongs to event"):
+        ledger.append(decision(0), context={**ctx(0), "event_id": "ev-9"})
+
+
+def test_without_a_context_repeats_are_unchanged():
+    ledger = DecisionLedger()
+    ledger.append(decision(0))
+    ledger.append(decision(0))
+    assert len(ledger) == 2

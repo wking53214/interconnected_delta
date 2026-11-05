@@ -197,6 +197,7 @@ class DecisionLedger:
                 )
             run_id, event_id = ctx["run_id"], ctx["event_id"]
             self._check_event_policy(run_id, event_id)
+            self._check_not_replay(decision)
             self._check_not_stale(decision)
         ts = timestamp if timestamp is not None else decision.timestamp
         if timestamp is not None:
@@ -271,6 +272,22 @@ class DecisionLedger:
                 raise DuplicateRecordError(
                     f"event {event_id!r} already has a Decision recorded under run {earlier.run_id!r}; "
                     f"an event is recorded once, whatever run it is brought back in (decide again under a new event)"
+                )
+
+    @staticmethod
+    def _identity(decision: Decision) -> tuple:
+        return (decision.entity_id, decision.decision_fingerprint, decision.timestamp, getattr(decision, "content_fingerprint", ""))
+
+    def _check_not_replay(self, decision: Decision) -> None:
+        """The same Decision (entity, fingerprint, time, and content fingerprint when it has one) is not recorded again
+        under a new event or run: a fresh id does not make it a new decision. Reached only when the run and event are
+        both new, so the event and run messages above are unchanged."""
+        want = self._identity(decision)
+        for earlier in self.entries:
+            if self._identity(earlier.decision) == want:
+                raise DuplicateRecordError(
+                    f"replay: this Decision is already recorded under event {earlier.event_id!r}, run {earlier.run_id!r}; "
+                    f"a new event or run id does not make it a new decision"
                 )
 
     def _check_not_stale(self, decision: Decision) -> None:

@@ -74,8 +74,9 @@ def test_the_same_decision_in_the_same_run_is_refused_and_leaves_the_ledger_unch
 def test_the_same_decision_for_another_event_in_another_run_is_recorded():
     ledger = DecisionLedger()
     ledger.append(decision(), context=dict(CTX))
-    ledger.append(decision(), context={**CTX, "run_id": "run-2", "event_id": "ev-2"})
-    assert len(ledger) == 2 and ledger.verify_chain_integrity()
+    with pytest.raises(DuplicateRecordError, match="replay"):
+        ledger.append(decision(), context={**CTX, "run_id": "run-2", "event_id": "ev-2"})
+    assert len(ledger) == 1 and ledger.verify_chain_integrity()
 
 
 def test_without_a_context_repeats_are_still_accepted_as_before():
