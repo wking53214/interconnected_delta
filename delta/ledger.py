@@ -280,11 +280,12 @@ class DecisionLedger:
 
     @staticmethod
     def _identity(decision: Decision) -> tuple:
-        return (decision.entity_id, decision.decision_fingerprint, decision.timestamp, getattr(decision, "content_fingerprint", ""))
+        return (decision.entity_id, decision.decision_fingerprint, decision.timestamp)
 
     def _check_not_replay(self, decision: Decision) -> None:
-        """The same Decision (entity, fingerprint, time, and content fingerprint when it has one) is not recorded again
-        under a new event or run: a fresh id does not make it a new decision. Reached only when the run and event are
+        """The same Decision (entity, fingerprint, time) is not recorded again under a new event or run: a fresh id
+        does not make it a new decision. The content fingerprint is deliberately not part of the key: blanking it (a
+        legacy Decision) must not turn a replay into a new record. Reached only when the run and event are
         both new, so the event and run messages above are unchanged."""
         want = self._identity(decision)
         for earlier in self.entries:

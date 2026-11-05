@@ -422,7 +422,8 @@ def _with_cf(reasoning):
 def test_content_fingerprint_is_part_of_the_replay_identity_only_when_set():
     ledger = DecisionLedger(require_context=True)
     ledger.append(_with_cf("first"), context=ctx(0))
-    ledger.append(_with_cf("second"), context=ctx(1))  # same decision_fingerprint and time, other content
+    with pytest.raises(DuplicateRecordError, match="replay"):
+        ledger.append(_with_cf("second"), context=ctx(1))  # same decision_fingerprint and time, other content
     with pytest.raises(DuplicateRecordError, match="replay"):
         ledger.append(_with_cf("second"), context=ctx(2))
     legacy = DecisionLedger(require_context=True)
