@@ -119,3 +119,50 @@ def test_a_datetime_subclass_as_the_entry_time_cannot_backdate():
     with pytest.raises(TypeError, match="timestamp"):
         ledger.append(decision(1), timestamp=NeverLess(1970, 1, 1), context=ctx(2))
     assert state(ledger) == before
+
+
+# --- Step 14: a sink may not append ---------------------------------------------------------------------------------
+
+def _in_thread(fn, timeout=5):
+    """Run fn in a daemon thread and fail (rather than hang the suite) if it does not return in time."""
+    import threading
+
+    box = {}
+
+    def run():
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout)
+    assert not t.is_alive(), "deadlocked"
+    return box
+
+
+def test_a_sink_that_appends_is_refused_not_deadlocked():
+    holder = {}
+    ledger = DecisionLedger(sink=lambda entry: holder["ledger"].append(decision(1), context=ctx(2)))
+    holder["ledger"] = ledger
+    before = state(ledger)
+    box = _in_thread(lambda: ledger.append(decision(0), context=ctx(1)))
+    assert isinstance(box.get("error"), RuntimeError)
+    assert "append from inside a sink is not allowed" in str(box["error"])
+    assert state(ledger) == before
+
+
+def test_the_sink_flag_is_cleared_and_another_thread_still_appends():
+    import threading
+
+    seen = []
+    ledger = DecisionLedger(sink=seen.append)
+    ledger.append(decision(0), context=ctx(1))
+    box = _in_thread(lambda: ledger.append(decision(1), context=ctx(2)))
+    assert "error" not in box
+    other = {}
+    t = threading.Thread(target=lambda: other.setdefault("e", ledger.append(decision(2), context=ctx(3))))
+    t.start()
+    t.join(5)
+    assert not t.is_alive() and len(ledger.entries) == 3 and len(seen) == 3

@@ -174,6 +174,8 @@ class DecisionLedger:
         # unbound Decision as it always did, but such an entry has no run, and CNS's strict check refuses it.
         self.require_context = require_context
         self._lock = threading.Lock()
+        # Set on the calling thread only while the sink runs (the lock is held then and is not reentrant).
+        self._sink_state = threading.local()
         self.entries: List[LedgerEntry] = []
         self.chain_head: str = hashlib.sha256(_GENESIS_SEED).hexdigest()
 
@@ -197,6 +199,8 @@ class DecisionLedger:
         """
         # Exactly a beta.Decision, judged by beta's own validate: an object that supplies its own validate (a subclass
         # that does nothing, a namespace with a lambda) would otherwise choose whether it is judged at all.
+        if getattr(self._sink_state, "active", False):
+            raise RuntimeError("append from inside a sink is not allowed")
         if type(decision) is not Decision:
             raise TypeError(f"delta records beta.Decision only; got {type(decision).__name__}")
         # Copy first, reading each caller-supplied iterable exactly once, then judge and record that copy only: an
@@ -247,7 +251,11 @@ class DecisionLedger:
             event_id=event_id,
         )
         if self._sink is not None:
-            self._sink(entry)
+            self._sink_state.active = True
+            try:
+                self._sink(entry)
+            finally:
+                self._sink_state.active = False
         # Every fallible step is above. The two updates below are made together: if either is interrupted the other
         # is put back, so head, entries and length are exactly as before and the next append works.
         previous_head, length = self.chain_head, len(self.entries)
