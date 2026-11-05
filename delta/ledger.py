@@ -238,6 +238,19 @@ class DecisionLedger:
             # Only a caller-supplied entry time is judged: an entry that takes its Decision's time keeps the
             # behaviour it always had (the per-entity stale rule governs Decision times).
             self._check_not_backdated(ts)
+            # Then: a Decision cannot be recorded before it was made. Mixing aware and naive times cannot be
+            # compared, and an entry whose date cannot be placed against its Decision is refused, not guessed at.
+            try:
+                before = ts < decision.timestamp
+            except TypeError:
+                raise ValueError(
+                    "the entry timestamp and the Decision's must be all timezone-aware or all naive"
+                ) from None
+            if before:
+                raise ValueError(
+                    f"the entry is dated before the Decision it records ({ts.isoformat()} < "
+                    f"{decision.timestamp.isoformat()})"
+                )
         audit_id = hashlib.sha256(
             f"{len(self.entries)}:{decision.decision_fingerprint}".encode()
         ).hexdigest()[:16]
