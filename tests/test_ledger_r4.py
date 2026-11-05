@@ -91,3 +91,32 @@ def test_str_subclass_context_values_are_refused(field):
     with pytest.raises(TypeError):
         ledger.append(decision(), context=bad)
     assert len(ledger) == 0
+
+
+# --- Step 3: stored Decision is a normalised copy -------------------------------------------------------------------
+
+def test_mutating_the_callers_lists_cannot_reach_the_stored_decision():
+    ledger = DecisionLedger(require_context=True)
+    rc = ["Recheck in 1h"]
+    keys = ["k0"]
+    d = decision()
+    # beta coerces lists to tuples at construction; put the aliases back the way an attacker (or old Decision) could.
+    object.__setattr__(d, "reversal_conditions", rc)
+    object.__setattr__(d, "triggered_by_keys", keys)
+    entry = ledger.append(d, context=CTX)
+    held = ledger.checkpoint()
+    snapshot = entry.decision
+    rc.append("Ignore all alarms")
+    keys.append("evil")
+    assert ledger.entries[0].decision == snapshot
+    assert ledger.entries[0].decision.reversal_conditions == ("Recheck in 1h",)
+    assert isinstance(ledger.entries[0].decision.triggered_by_keys, tuple)
+    assert ledger.verify_chain_integrity() is True
+    assert ledger.verify_against(held) is True
+
+
+def test_the_returned_entry_decision_is_the_stored_one():
+    ledger = DecisionLedger()
+    entry = ledger.append(decision())
+    assert entry is ledger.entries[0]
+    assert entry.decision is ledger.entries[0].decision

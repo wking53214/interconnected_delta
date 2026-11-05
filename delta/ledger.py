@@ -41,6 +41,7 @@ CHANGED from the source, and from an earlier version of this file
     determinism for a given deployment, this would need revisiting.
 """
 
+import dataclasses
 import hashlib
 import json
 import threading
@@ -54,6 +55,7 @@ from beta import Decision
 from .context import check_context
 
 _GENESIS_SEED = b"INTERCONNECTED_DELTA_GENESIS"
+_TUPLE_FIELDS = ("triggered_by_locks", "triggered_by_keys", "newly_triggered_locks", "reversal_conditions")
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,8 @@ class DecisionLedger:
         if type(decision) is not Decision:
             raise TypeError(f"delta records beta.Decision only; got {type(decision).__name__}")
         Decision.validate(decision, check_fingerprint=context is not None)
+        # Store a copy whose list-typed fields are tuples, so a list the caller still holds cannot reach the record.
+        decision = dataclasses.replace(decision, **{name: tuple(getattr(decision, name)) for name in _TUPLE_FIELDS})
         with self._lock:
             return self._append_locked(decision, timestamp, context)
 
