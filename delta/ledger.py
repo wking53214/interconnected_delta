@@ -160,6 +160,9 @@ class DecisionLedger:
         with the same fingerprint already recorded in the same run is refused (DuplicateRecordError). The run
         and event are hashed into the chain. Without a context behaviour is as it always was, plus the
         consistency check.
+
+        Atomic: the entry and every check are built first; only then are the head and the entry list updated,
+        together, under the lock. A failure at any point leaves head, entries and length exactly as they were.
         """
         # Exactly a beta.Decision, judged by beta's own validate: an object that supplies its own validate (a subclass
         # that does nothing, a namespace with a lambda) would otherwise choose whether it is judged at all.
@@ -205,8 +208,16 @@ class DecisionLedger:
             run_id=run_id,
             event_id=event_id,
         )
-        self.chain_head = immutable_hash
-        self.entries.append(entry)
+        # Every fallible step is above. The two updates below are made together: if either is interrupted the other
+        # is put back, so head, entries and length are exactly as before and the next append works.
+        previous_head, length = self.chain_head, len(self.entries)
+        try:
+            self.entries.append(entry)
+            self.chain_head = immutable_hash
+        except BaseException:
+            del self.entries[length:]
+            self.chain_head = previous_head
+            raise
         return entry
 
     def _check_head(self) -> None:

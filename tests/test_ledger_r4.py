@@ -120,3 +120,96 @@ def test_the_returned_entry_decision_is_the_stored_one():
     entry = ledger.append(decision())
     assert entry is ledger.entries[0]
     assert entry.decision is ledger.entries[0].decision
+
+
+# --- Step 4: append is atomic ---------------------------------------------------------------------------------------
+
+class FailingAppend(list):
+    """A list whose append fails once, as the interruption in attack row 16a did."""
+
+    armed = True
+
+    def append(self, item):
+        if self.armed:
+            self.armed = False
+            raise KeyboardInterrupt("simulated interruption inside entries.append")
+        return super().append(item)
+
+
+class FailingHead(DecisionLedger):
+    """A ledger whose chain_head cannot be set once, after the entry is already in the list."""
+
+    armed = False
+
+    @property
+    def chain_head(self):
+        return self.__dict__["_head"]
+
+    @chain_head.setter
+    def chain_head(self, value):
+        if self.armed and value != self.__dict__.get("_head"):
+            self.armed = False
+            raise KeyboardInterrupt("simulated interruption while updating the head")
+        self.__dict__["_head"] = value
+
+
+def _after_failure_is_unchanged_and_usable(ledger, run, exc):
+    before = state(ledger)
+    with pytest.raises(exc):
+        run()
+    assert state(ledger) == before
+    assert ledger.verify_chain_integrity() is True
+    ledger.append(decision(9), context=ctx(9))
+    assert len(ledger) == len(before[2]) + 1 and ledger.verify_chain_integrity() is True
+
+
+@pytest.mark.parametrize("prior", [0, 2])
+def test_an_interruption_inside_entries_append_changes_nothing(prior):
+    ledger = DecisionLedger(require_context=True)
+    for i in range(prior):
+        ledger.append(decision(i), context=ctx(i))
+    ledger.entries = FailingAppend(ledger.entries)
+    _after_failure_is_unchanged_and_usable(ledger, lambda: ledger.append(decision(5), context=ctx(5)), KeyboardInterrupt)
+    # the event whose append failed was never recorded, so it can still be recorded
+    ledger.append(decision(5), context=ctx(5))
+    assert ledger.verify_chain_integrity()
+
+
+@pytest.mark.parametrize("prior", [0, 2])
+def test_an_interruption_while_updating_the_head_changes_nothing(prior):
+    ledger = FailingHead(require_context=True)
+    for i in range(prior):
+        ledger.append(decision(i), context=ctx(i))
+    ledger.armed = True
+    _after_failure_is_unchanged_and_usable(ledger, lambda: ledger.append(decision(5), context=ctx(5)), KeyboardInterrupt)
+
+
+def test_a_failing_hash_step_changes_nothing(monkeypatch):
+    import delta.ledger as mod
+
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(0))
+    real = mod._hash_dict
+    before = state(ledger)
+
+    def broken(d):
+        raise RuntimeError("hash failed")
+
+    monkeypatch.setattr(mod, "_hash_dict", broken)
+    with pytest.raises(RuntimeError):
+        ledger.append(decision(1), context=ctx(1))
+    monkeypatch.setattr(mod, "_hash_dict", real)
+    assert state(ledger) == before
+    ledger.append(decision(1), context=ctx(1))
+    assert len(ledger) == 2 and ledger.verify_chain_integrity()
+
+
+def test_a_refused_append_changes_nothing_and_the_event_stays_free():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(0))
+    before = state(ledger)
+    with pytest.raises(DuplicateRecordError):
+        ledger.append(decision(1), context={**ctx(1), "event_id": "ev-0"})
+    assert state(ledger) == before
+    ledger.append(decision(1), context=ctx(1))
+    assert len(ledger) == 2
