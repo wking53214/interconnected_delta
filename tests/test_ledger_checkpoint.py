@@ -48,7 +48,7 @@ def test_an_empty_ledgers_checkpoint_is_genesis_and_verifies():
     ledger = DecisionLedger()
     cp = ledger.checkpoint()
     assert cp.length == 0 and cp.head == hashlib.sha256(b"INTERCONNECTED_DELTA_GENESIS").hexdigest()
-    assert ledger.verify_against(cp)
+    assert not ledger.verify_against(cp)
 
 
 def test_the_ledger_may_grow_past_a_checkpoint():

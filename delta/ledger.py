@@ -44,6 +44,7 @@ CHANGED from the source, and from an earlier version of this file
 import dataclasses
 import hashlib
 import json
+import re
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -55,6 +56,7 @@ from beta import Decision
 from .context import check_context
 
 _GENESIS_SEED = b"INTERCONNECTED_DELTA_GENESIS"
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 _TUPLE_FIELDS = ("triggered_by_locks", "triggered_by_keys", "newly_triggered_locks", "reversal_conditions")
 
 
@@ -295,17 +297,23 @@ class DecisionLedger:
         """Whether the whole chain verifies AND still contains the history the checkpoint recorded.
 
         The ledger may have grown since; it may not have been truncated, reordered or rewritten up to the
-        checkpoint. False for any checkpoint that does not fit (negative, beyond the ledger, wrong head).
+        checkpoint. False for any checkpoint that does not fit: a length that is not an int (a bool is not), is
+        negative or is beyond the ledger, a head that is not exactly a ``str`` of 64 lowercase hex digits (an object
+        that merely compares equal does not count), or a wrong head.
+
+        A checkpoint of length 0 always returns False. It names no entry, so it is the same for every ledger and
+        carries no evidence about any of them; accepting it would let a rewritten ledger pass against it.
         """
         if not isinstance(checkpoint, LedgerCheckpoint):
             raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
-        length = checkpoint.length
-        if isinstance(length, bool) or not isinstance(length, int) or length < 0 or length > len(self.entries):
+        length, head = checkpoint.length, checkpoint.head
+        if type(length) is not int or length < 1 or length > len(self.entries):
+            return False
+        if type(head) is not str or not _HEX64.fullmatch(head):
             return False
         if not self.verify_chain_integrity():
             return False
-        anchor = hashlib.sha256(_GENESIS_SEED).hexdigest() if length == 0 else self.entries[length - 1].immutable_hash
-        return anchor == checkpoint.head
+        return self.entries[length - 1].immutable_hash == head
 
     def __len__(self) -> int:
         return len(self.entries)

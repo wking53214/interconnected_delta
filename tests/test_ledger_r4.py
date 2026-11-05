@@ -261,3 +261,86 @@ def test_a_sink_must_be_callable_and_none_is_the_default():
     with pytest.raises(TypeError):
         DecisionLedger(sink="not callable")
     assert len(DecisionLedger(sink=None).append(decision(0)).audit_id) == 16
+
+
+# --- Step 6: verify_against takes only a real, typed, non-empty checkpoint -----------------------------------------
+
+class AlwaysEqual:
+    def __eq__(self, other):
+        return True
+
+    def __ne__(self, other):
+        return False
+
+    __hash__ = None
+
+
+def _grown(n):
+    ledger = DecisionLedger(require_context=True)
+    for i in range(n):
+        ledger.append(decision(i), context=ctx(i))
+    return ledger
+
+
+def _rewritten(ledger):
+    """The attack: a shadow ledger holding a different entry, swapped in with its head."""
+    shadow = DecisionLedger(require_context=True)
+    forged = shadow.append(decision(7, decision="DISCHARGE_SAFE"), context=CTX)
+    ledger.entries[:] = [forged]
+    ledger.chain_head = forged.immutable_hash
+    return ledger
+
+
+def test_an_empty_checkpoint_carries_no_evidence_even_against_a_rewritten_ledger():  # attack row 11b
+    ledger = _rewritten(_grown(1))
+    assert ledger.verify_chain_integrity() is True
+    assert ledger.verify_against(LedgerCheckpoint(0, GENESIS)) is False
+    assert DecisionLedger().verify_against(DecisionLedger().checkpoint()) is False
+
+
+def test_a_head_object_that_always_compares_equal_is_refused():  # attack row 11c
+    ledger = _rewritten(_grown(1))
+    assert ledger.verify_against(LedgerCheckpoint(1, AlwaysEqual())) is False  # type: ignore[arg-type]
+    assert ledger.verify_against(LedgerCheckpoint(0, AlwaysEqual())) is False  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("length", [True, 1.0, "1", None, -1, 99])
+def test_a_length_that_is_not_a_real_in_range_int_is_refused(length):
+    ledger = _grown(1)
+    assert ledger.verify_against(LedgerCheckpoint(length, ledger.chain_head)) is False  # type: ignore[arg-type]
+
+
+def test_a_head_that_is_not_an_exact_lowercase_hex_str_is_refused():
+    ledger = _grown(1)
+
+    class S(str):
+        pass
+
+    head = ledger.chain_head
+    for bad in (S(head), head.upper(), head[:63], head + "0", head[:-1] + "g", b"x", None, 5):
+        assert ledger.verify_against(LedgerCheckpoint(1, bad)) is False  # type: ignore[arg-type]
+    assert ledger.verify_against(LedgerCheckpoint(1, head)) is True
+
+
+def test_an_honest_checkpoint_still_verifies_after_the_ledger_grows():
+    ledger = _grown(2)
+    cp = ledger.checkpoint()
+    ledger.append(decision(5), context=ctx(5))
+    assert ledger.verify_against(cp) is True
+    assert ledger.verify_against(ledger.checkpoint()) is True
+
+
+def test_a_checkpoint_from_another_ledger_is_rejected():
+    mine, other = _grown(2), DecisionLedger(require_context=True)
+    for i in range(2):
+        other.append(decision(i, decision="DISCHARGE_SAFE"), context=ctx(i))
+    assert mine.verify_against(other.checkpoint()) is False
+
+
+def test_rollback_is_rejected_against_a_later_checkpoint():
+    ledger = _grown(3)
+    later = ledger.checkpoint()
+    del ledger.entries[2:]
+    ledger.chain_head = ledger.entries[-1].immutable_hash
+    assert ledger.verify_chain_integrity() is True
+    assert ledger.verify_against(later) is False
