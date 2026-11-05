@@ -487,3 +487,25 @@ def test_a_tampered_content_fingerprint_is_refused_when_recorded_with_a_context(
     assert state(ledger) == before
     ledger.append(_with_cf_of(_legacy()), context=CTX)
     assert len(ledger) == 1
+
+
+# --- Step 11: claims the README makes about durability and the sink ------------------------------------------------
+
+def test_a_restart_is_an_empty_ledger_that_verifies_and_accepts_the_same_event_again():
+    first = DecisionLedger(require_context=True)
+    first.append(decision(0), context=ctx(0))
+    held = first.checkpoint()  # kept outside the process
+    restarted = DecisionLedger(require_context=True)  # what a restart gives: nothing carried over
+    assert len(restarted) == 0 and restarted.verify_chain_integrity() is True
+    assert restarted.verify_against(held) is False  # only a held checkpoint shows the history is gone
+    restarted.append(decision(0), context=ctx(0))  # the same event is accepted again
+    assert len(restarted) == 1
+
+
+def test_a_sink_that_succeeded_may_have_seen_an_entry_that_a_later_failure_did_not_record():
+    seen = []
+    ledger = DecisionLedger(require_context=True, sink=seen.append)
+    ledger.entries = FailingAppend(ledger.entries)
+    with pytest.raises(KeyboardInterrupt):
+        ledger.append(decision(0), context=ctx(0))
+    assert len(ledger) == 0 and len(seen) == 1  # the sink's copy is ahead of the ledger: the caller must reconcile
