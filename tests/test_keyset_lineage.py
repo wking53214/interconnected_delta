@@ -68,3 +68,23 @@ def test_an_entry_recorded_without_one_hashes_as_it_always_did():
     ea = a.append(decision(keyset_fingerprint=""))
     legacy = dataclasses.replace(decision(keyset_fingerprint=""))
     assert ea.immutable_hash == b.append(legacy).immutable_hash
+
+
+def _with_content_fingerprint(**over):
+    from beta import content_fingerprint
+
+    d = decision(**over)
+    return dataclasses.replace(d, content_fingerprint=content_fingerprint(d))
+
+
+def test_deltas_embedded_decision_equals_betas_with_a_content_fingerprint_too():
+    d = _with_content_fingerprint()
+    assert d.content_fingerprint
+    entry = DecisionLedger().append(d)
+    assert entry_content(entry)["decision"] == beta_content(d)
+    assert entry_content(entry)["decision"]["content_fingerprint"] == d.content_fingerprint
+
+
+def test_the_chain_hash_covers_the_content_fingerprint_only_when_there_is_one():
+    assert "content_fingerprint" in _canonical_subset("a", T0, _with_content_fingerprint())
+    assert "content_fingerprint" not in _canonical_subset("a", T0, decision())

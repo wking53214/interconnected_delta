@@ -178,6 +178,8 @@ def _decision_content(decision: Any) -> Dict[str, Any]:
     # Present only when the Decision recorded one, exactly as beta's own connector does it.
     if getattr(decision, "keyset_fingerprint", ""):
         content["keyset_fingerprint"] = check_digest(decision.keyset_fingerprint, "Decision.keyset_fingerprint")
+    if getattr(decision, "content_fingerprint", ""):
+        content["content_fingerprint"] = check_digest(decision.content_fingerprint, "Decision.content_fingerprint")
     return content
 
 

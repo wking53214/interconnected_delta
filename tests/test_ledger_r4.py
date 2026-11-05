@@ -447,3 +447,43 @@ def test_without_a_context_repeats_are_unchanged():
     ledger.append(decision(0))
     ledger.append(decision(0))
     assert len(ledger) == 2
+
+
+# --- Step 9: content_fingerprint is hashed, present-when-set ------------------------------------------------------
+
+def _legacy():
+    return decision(0, reasoning="why")
+
+
+def _with_cf_of(d):
+    from beta import content_fingerprint
+
+    return dataclasses.replace(d, content_fingerprint=content_fingerprint(d))
+
+
+def test_a_decision_without_a_content_fingerprint_hashes_exactly_as_before():
+    # Fixed value computed with the code as it was before this step (commit of Step 1), not with this code.
+    entry = DecisionLedger().append(_legacy())
+    assert entry.immutable_hash == "136b7c2286898e734035881d9eece8881a6dac9156afb977b103a97ef5c9b8bb"
+
+
+def test_with_a_content_fingerprint_the_entry_hash_differs_and_follows_its_value():
+    plain = DecisionLedger().append(_legacy())
+    with_cf = DecisionLedger().append(_with_cf_of(_legacy()))
+    assert with_cf.immutable_hash != plain.immutable_hash
+    ledger = DecisionLedger()
+    ledger.append(_with_cf_of(_legacy()))
+    first = ledger.entries[0]
+    ledger.entries[0] = dataclasses.replace(first, decision=dataclasses.replace(first.decision, content_fingerprint="d" * 64))
+    assert ledger.verify_chain_integrity() is False
+
+
+def test_a_tampered_content_fingerprint_is_refused_when_recorded_with_a_context():
+    ledger = DecisionLedger(require_context=True)
+    bad = dataclasses.replace(_with_cf_of(_legacy()), reasoning="edited after the fact")
+    before = state(ledger)
+    with pytest.raises(ValueError, match="content_fingerprint"):
+        ledger.append(bad, context=CTX)
+    assert state(ledger) == before
+    ledger.append(_with_cf_of(_legacy()), context=CTX)
+    assert len(ledger) == 1

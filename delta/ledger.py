@@ -109,6 +109,10 @@ def _canonical_subset(
     # recorded without it hashes exactly as before.
     if getattr(decision, "keyset_fingerprint", ""):
         subset["keyset_fingerprint"] = decision.keyset_fingerprint
+    # beta's fingerprint over every informational field of the Decision, hashed only when set, so a Decision without
+    # one hashes exactly as before.
+    if getattr(decision, "content_fingerprint", ""):
+        subset["content_fingerprint"] = decision.content_fingerprint
     if run_id is not None:
         subset["run_id"] = run_id
     if event_id is not None:
