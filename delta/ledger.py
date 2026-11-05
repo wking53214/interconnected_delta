@@ -41,19 +41,23 @@ CHANGED from the source, and from an earlier version of this file
     determinism for a given deployment, this would need revisiting.
 """
 
+import dataclasses
 import hashlib
 import json
+import re
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from beta import Decision
 
 from .context import check_context
 
 _GENESIS_SEED = b"INTERCONNECTED_DELTA_GENESIS"
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_TUPLE_FIELDS = ("triggered_by_locks", "triggered_by_keys", "newly_triggered_locks", "reversal_conditions")
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,10 @@ def _canonical_subset(
     # recorded without it hashes exactly as before.
     if getattr(decision, "keyset_fingerprint", ""):
         subset["keyset_fingerprint"] = decision.keyset_fingerprint
+    # beta's fingerprint over every informational field of the Decision, hashed only when set, so a Decision without
+    # one hashes exactly as before.
+    if getattr(decision, "content_fingerprint", ""):
+        subset["content_fingerprint"] = decision.content_fingerprint
     if run_id is not None:
         subset["run_id"] = run_id
     if event_id is not None:
@@ -136,7 +144,13 @@ def _hash_dict(d: dict) -> str:
 
 
 class DecisionLedger:
-    def __init__(self, require_context: bool = False) -> None:
+    def __init__(self, require_context: bool = False, sink: Optional[Callable[[LedgerEntry], None]] = None) -> None:
+        # sink: an optional callable(entry) called with each entry after it is built and before any state changes, so a
+        # caller can write it somewhere durable first. If it raises, nothing was recorded and the exception propagates.
+        # This ledger supplies the hook; it does not supply the storage.
+        if sink is not None and not callable(sink):
+            raise TypeError(f"sink must be callable or None; got {type(sink).__name__}")
+        self._sink = sink
         # require_context=True: every append must carry a pipeline context. Left False the ledger still records an
         # unbound Decision as it always did, but such an entry has no run, and CNS's strict check refuses it.
         self.require_context = require_context
@@ -158,12 +172,17 @@ class DecisionLedger:
         with the same fingerprint already recorded in the same run is refused (DuplicateRecordError). The run
         and event are hashed into the chain. Without a context behaviour is as it always was, plus the
         consistency check.
+
+        Atomic: the entry and every check are built first; only then are the head and the entry list updated,
+        together, under the lock. A failure at any point leaves head, entries and length exactly as they were.
         """
         # Exactly a beta.Decision, judged by beta's own validate: an object that supplies its own validate (a subclass
         # that does nothing, a namespace with a lambda) would otherwise choose whether it is judged at all.
         if type(decision) is not Decision:
             raise TypeError(f"delta records beta.Decision only; got {type(decision).__name__}")
         Decision.validate(decision, check_fingerprint=context is not None)
+        # Store a copy whose list-typed fields are tuples, so a list the caller still holds cannot reach the record.
+        decision = dataclasses.replace(decision, **{name: tuple(getattr(decision, name)) for name in _TUPLE_FIELDS})
         with self._lock:
             return self._append_locked(decision, timestamp, context)
 
@@ -182,8 +201,13 @@ class DecisionLedger:
                 )
             run_id, event_id = ctx["run_id"], ctx["event_id"]
             self._check_event_policy(run_id, event_id)
+            self._check_not_replay(decision)
             self._check_not_stale(decision)
         ts = timestamp if timestamp is not None else decision.timestamp
+        if timestamp is not None:
+            # Only a caller-supplied entry time is judged: an entry that takes its Decision's time keeps the
+            # behaviour it always had (the per-entity stale rule governs Decision times).
+            self._check_not_backdated(ts)
         audit_id = hashlib.sha256(
             f"{len(self.entries)}:{decision.decision_fingerprint}".encode()
         ).hexdigest()[:16]
@@ -201,8 +225,18 @@ class DecisionLedger:
             run_id=run_id,
             event_id=event_id,
         )
-        self.chain_head = immutable_hash
-        self.entries.append(entry)
+        if self._sink is not None:
+            self._sink(entry)
+        # Every fallible step is above. The two updates below are made together: if either is interrupted the other
+        # is put back, so head, entries and length are exactly as before and the next append works.
+        previous_head, length = self.chain_head, len(self.entries)
+        try:
+            self.entries.append(entry)
+            self.chain_head = immutable_hash
+        except BaseException:
+            del self.entries[length:]
+            self.chain_head = previous_head
+            raise
         return entry
 
     def _check_head(self) -> None:
@@ -213,6 +247,22 @@ class DecisionLedger:
         if self.chain_head != want:
             raise LedgerCorruptError(
                 "the ledger's head does not match its last entry; nothing more is appended to a chain that does not verify"
+            )
+
+    def _check_not_backdated(self, ts: datetime) -> None:
+        """A caller-supplied entry timestamp is never earlier than the entry before it (equal is allowed)."""
+        if not self.entries:
+            return
+        previous = self.entries[-1].timestamp
+        try:
+            earlier = ts < previous
+        except TypeError as exc:
+            raise ValueError(
+                f"entry timestamps must be all timezone-aware or all naive; got {ts!r} after {previous!r}"
+            ) from exc
+        if earlier:
+            raise ValueError(
+                f"backdated entry: {ts.isoformat()} is earlier than the previous entry ({previous.isoformat()})"
             )
 
     def _check_event_policy(self, run_id: str, event_id: str) -> None:
@@ -226,6 +276,22 @@ class DecisionLedger:
                 raise DuplicateRecordError(
                     f"event {event_id!r} already has a Decision recorded under run {earlier.run_id!r}; "
                     f"an event is recorded once, whatever run it is brought back in (decide again under a new event)"
+                )
+
+    @staticmethod
+    def _identity(decision: Decision) -> tuple:
+        return (decision.entity_id, decision.decision_fingerprint, decision.timestamp, getattr(decision, "content_fingerprint", ""))
+
+    def _check_not_replay(self, decision: Decision) -> None:
+        """The same Decision (entity, fingerprint, time, and content fingerprint when it has one) is not recorded again
+        under a new event or run: a fresh id does not make it a new decision. Reached only when the run and event are
+        both new, so the event and run messages above are unchanged."""
+        want = self._identity(decision)
+        for earlier in self.entries:
+            if self._identity(earlier.decision) == want:
+                raise DuplicateRecordError(
+                    f"replay: this Decision is already recorded under event {earlier.event_id!r}, run {earlier.run_id!r}; "
+                    f"a new event or run id does not make it a new decision"
                 )
 
     def _check_not_stale(self, decision: Decision) -> None:
@@ -272,17 +338,23 @@ class DecisionLedger:
         """Whether the whole chain verifies AND still contains the history the checkpoint recorded.
 
         The ledger may have grown since; it may not have been truncated, reordered or rewritten up to the
-        checkpoint. False for any checkpoint that does not fit (negative, beyond the ledger, wrong head).
+        checkpoint. False for any checkpoint that does not fit: a length that is not an int (a bool is not), is
+        negative or is beyond the ledger, a head that is not exactly a ``str`` of 64 lowercase hex digits (an object
+        that merely compares equal does not count), or a wrong head.
+
+        A checkpoint of length 0 always returns False. It names no entry, so it is the same for every ledger and
+        carries no evidence about any of them; accepting it would let a rewritten ledger pass against it.
         """
         if not isinstance(checkpoint, LedgerCheckpoint):
             raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
-        length = checkpoint.length
-        if isinstance(length, bool) or not isinstance(length, int) or length < 0 or length > len(self.entries):
+        length, head = checkpoint.length, checkpoint.head
+        if type(length) is not int or length < 1 or length > len(self.entries):
+            return False
+        if type(head) is not str or not _HEX64.fullmatch(head):
             return False
         if not self.verify_chain_integrity():
             return False
-        anchor = hashlib.sha256(_GENESIS_SEED).hexdigest() if length == 0 else self.entries[length - 1].immutable_hash
-        return anchor == checkpoint.head
+        return self.entries[length - 1].immutable_hash == head
 
     def __len__(self) -> int:
         return len(self.entries)

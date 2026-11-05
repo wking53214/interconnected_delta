@@ -80,7 +80,7 @@ def test_the_same_event_and_decision_under_a_new_run_id_is_refused():
 def test_a_new_event_is_recorded_but_a_different_decision_for_the_same_event_is_refused():
     ledger = DecisionLedger()
     ledger.append(decision(), context=CTX)
-    ledger.append(decision(), context={**CTX, "run_id": "run-2", "event_id": "ev-2"})
+    ledger.append(decision(keys=("fever",)), context={**CTX, "run_id": "run-2", "event_id": "ev-2"})
     with pytest.raises(DuplicateRecordError):
         ledger.append(decision(keys=("respiratory_distress",)), context={**CTX, "run_id": "run-3"})
     assert len(ledger) == 2 and ledger.verify_chain_integrity()

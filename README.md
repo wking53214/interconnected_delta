@@ -28,13 +28,38 @@ Unlike α/ζ/β (unifying duplicated patterns), δ is mostly **wiring of already
 - Genesis seed → `chain_head`.
 - Canonical subset of a Decision (ids, timestamp, fingerprint, narrative, trigger names) is hashed; `immutable_hash = SHA-256(chain_head + hash(canonical))`.
 - Verification **recomputes** the chain. Stored hashes are not trusted.
-- In-memory `List[LedgerEntry]`.
+- In-memory `List[LedgerEntry]`. See "Integrity, availability, durability" below for what that does and does not give.
 - `append` records exactly a `beta.Decision` (anything else, including a subclass or an object that merely has a `validate`, is a `TypeError`) and calls `Decision.validate()` on it first, with or without a context: a Decision whose confidence basis contradicts its keys, whose fields have the wrong types, or whose confidence is not a finite number in [0, 1], is refused and the ledger is unchanged. `append` holds a lock, so concurrent appends keep one chain; the public `entries` list itself is not protected.
 - **Pipeline run and the event policy.** `append(decision, context=...)` takes a context (`schema`, `entity_id`, `event_id`, `run_id`, see `delta/context.py`). With it the Decision must be about the context's entity and its `decision_fingerprint` must match its fields. **A run belongs to exactly one event, and an event has exactly one Decision**, whatever it says and whatever run it is brought back in: a second Decision for a recorded event raises `DuplicateRecordError`, and a run that names a different event than it already recorded raises `ValueError`. To decide again, use a new event. A Decision under a context is also never older than the newest one recorded for its entity (`StaleDecisionError`; equal instants are fine; mixing timezone-aware and naive timestamps is refused). The entry carries `run_id` and `event_id`, hashed into the chain only when set, so an entry recorded without a context hashes exactly as before. Without a context a repeat or an older Decision is accepted, as it always was, and CNS's strict check refuses such an entry because it has no run.
 - **Requiring a context.** `DecisionLedger(require_context=True)` refuses any append without one (`ContextRequiredError`), for callers that want the bound path enforced. The default keeps recording unbound Decisions as it always did; an unbound entry is not equivalent to a verified one.
 - **KeySet lineage.** A Decision that records `keyset_fingerprint` (beta sets it when its lock results came from the KeySet it was given) has it hashed into the chain, so it cannot be changed afterwards; a Decision without one hashes as before.
 - **A corrupt head stops recording.** Every append first checks, in O(1), that `chain_head` names the last entry (`LedgerCorruptError`). That catches a head and an entry list left disagreeing; it does not catch a chain someone rewrote and re-headed, which is what a checkpoint held outside the ledger is for.
-- **Checkpoint.** `checkpoint()` returns a frozen `LedgerCheckpoint(length, head)`; `verify_against(checkpoint)` is true only if the whole chain verifies and the entry at that length still hashes to that head. The ledger may grow past a checkpoint; truncation, reordering or a rewrite up to it fails. `verify_chain_integrity()` alone cannot tell: whoever can edit the entries can reset `chain_head`, or recompute the whole chain, and it verifies. That gap is measured, and `tests/test_ledger_checkpoint.py` records it. A checkpoint is only as trustworthy as the place it is kept, which delta does not provide.
+- **Checkpoint.** `checkpoint()` returns a frozen `LedgerCheckpoint(length, head)`; `verify_against(checkpoint)` is true only if the whole chain verifies and the entry at that length still hashes to that head. The ledger may grow past a checkpoint; truncation, reordering or a rewrite up to it fails. `verify_chain_integrity()` alone cannot tell: whoever can edit the entries can reset `chain_head`, or recompute the whole chain, and it verifies. That gap is measured, and `tests/test_ledger_checkpoint.py` records it. A checkpoint is only as trustworthy as the place it is kept, which delta does not provide. `verify_against` refuses (returns `False`) a checkpoint whose `length` is not an `int` (a `bool` is not), is below 1 or beyond the ledger, or whose `head` is not exactly a `str` of 64 lowercase hex digits; **a checkpoint of length 0 always returns `False`**, because it names no entry, is identical for every ledger and so is no evidence about any of them. A caller's `(0, genesis)` or an object whose `__eq__` always answers yes no longer passes.
+
+### New refusals and guarantees (hardening round 4)
+
+Each item below has a test in `tests/test_ledger_r4.py` (or the file named).
+
+- **Checkpoint typing.** See the Checkpoint paragraph above: empty, mistyped and look-alike checkpoints are `False`.
+- **Backdated entry.** `append(decision, timestamp=t)` raises `ValueError("backdated ...")` if the supplied `t` is earlier than the previous entry's timestamp; equal is allowed. Only a caller-supplied `timestamp` is judged. An entry that takes its Decision's own time is as it always was (the per-entity stale rule governs Decision times, and only under a context).
+- **Replay.** Under a context, a Decision whose `(entity_id, decision_fingerprint, timestamp, content_fingerprint when set)` is already in the ledger under another event or run raises `DuplicateRecordError` with "replay" in the message, and the ledger is unchanged. The existing same-event and same-run refusals fire first and keep their messages. Without a context nothing changes: a repeat is still accepted. A Decision that differs in any other field but shares its `decision_fingerprint` and time is a replay only if it carries no `content_fingerprint`; with one, the differing content makes it a different Decision.
+- **Context snapshot.** `check_context` reads the mapping once (`dict(context)`), validates that snapshot, and returns it. Every value must be exactly `str`, not a subclass. The ledger records values from the snapshot only, so a mapping that answers differently on later reads cannot change what is recorded.
+- **Stored copy.** `append` stores a copy of the Decision whose four tuple fields are tuples, so a list the caller still holds cannot reach the stored Decision (and the chain keeps verifying).
+- **`content_fingerprint`.** beta's whole-Decision fingerprint is hashed into the chain and bound by the CNS connector only when the Decision has one, so every existing hash and digest is unchanged. A Decision recorded under a context is refused if its `content_fingerprint` does not match its fields.
+
+### Atomic append and the sink hook
+
+`append` builds the entry and runs every check first. Only then does it update the head and the entry list, together, under the lock; if either update is interrupted (tested: a failing `entries.append`, a failing head update, a failing hash step) the other is put back, and head, entries, length and the event policy are exactly as before, and the next append works. This is atomicity against exceptions inside the process. It is not crash safety: a killed process loses the whole in-memory ledger.
+
+`DecisionLedger(sink=callable)` calls `sink(entry)` with the exact entry that will be stored, after it is built and before any state changes. If the sink raises, nothing was recorded and the exception propagates; the sink is not called for a refused append. Its purpose is to let a caller write each entry somewhere durable before the ledger accepts it. delta supplies the hook, not the storage. If the sink succeeds and a later step then fails, the sink has seen an entry the ledger did not record; the caller must reconcile (tested).
+
+### Integrity, availability, durability
+
+These are three different properties and delta gives only the first, and only conditionally.
+
+- **Integrity** (tamper evidence): the chain detects edits, truncation and reordering **given a checkpoint that was taken earlier and is held outside the process and outside the reach of whoever can edit the ledger**. Without one, whoever can edit the entries can reset the head or recompute the chain and it verifies.
+- **Availability** (the ledger can still be written after a fault): an exception inside `append` or inside the sink leaves the ledger writable and unchanged. A head that disagrees with its last entry still stops all recording (`LedgerCorruptError`); there is no repair path.
+- **Durability** (survives a restart): **not provided.** The ledger is in memory. A restart loses it, and a freshly created ledger verifies cleanly, accepts the same event again, and fails `verify_against` only for a caller that kept a non-empty checkpoint taken before the restart (tested). A file store and checkpoint custody are **not implemented here**; they are deferred pending confirmation of what `sentinel_os` already provides.
 
 ### Obligations
 
@@ -57,7 +82,7 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 
 | Gap | Detail |
 |---|---|
-| In-memory ledger | Process death loses the chain. No file backend (observe-perceive `execution_guard` has JSONL; this does not). No atomic append, no partial-write recovery, no external anchoring. Tamper-evidence holds only relative to a checkpoint kept outside the ledger. This is a reference ledger; production custody is sentinel_os. |
+| In-memory ledger | Process death loses the chain. No file backend (observe-perceive `execution_guard` has JSONL; this does not), no partial-write recovery, no external anchoring. `append` is atomic against faults inside the process (see below), not against a crash. Tamper-evidence holds only relative to a checkpoint kept outside the ledger. This is a reference ledger; production custody is sentinel_os. |
 | Dual custody | Live orchestrator writes Conservation Kernel ledger + `ExecutionLedger`, not `delta.DecisionLedger`. sentinel_os writes Postgres. Three custody stories. |
 | Git dependencies | `zeta` and `beta` are pinned by commit in `pyproject.toml`; `tests/test_sibling_pins.py` holds the pins, so moving one is a reviewed change. They are not on a package index. |
 | Context is optional | Without a `context`, a repeat is accepted and no run is recorded. A caller that needs run boundaries must pass one; CNS's strict trace refuses an entry that has none. |
@@ -88,7 +113,9 @@ from delta.fairness import CohortDecision, RegulatoryFinding
 
 `DecisionLedger.append(decision, timestamp=None, *, context=None) -> LedgerEntry`  
 `DecisionLedger.verify_chain_integrity() -> bool` (recomputes the chain)  
-`DecisionLedger.checkpoint() -> LedgerCheckpoint` and `DecisionLedger.verify_against(checkpoint) -> bool`
+`DecisionLedger.checkpoint() -> LedgerCheckpoint` and `DecisionLedger.verify_against(checkpoint) -> bool`  
+`DecisionLedger(require_context=False, sink=None)`  
+`delta.cns_connector.verification_receipt(ledger, checkpoint, *, context, decision_digest, index=-1) -> dict`
 
 ## 7. Stack Integration Topology
 
@@ -112,6 +139,8 @@ It makes delta's two primary records **bindable**: a `LedgerEntry` (the recorded
 It is **binding only**, and deliberately not a gate. There is no mapping from an entry or an obligation to `PASS`, `RETRY` or `TERMINAL_BREACH`: a ledger entry is a custody record and an obligation is a lifecycle state, and turning either into a gate outcome would invent a meaning delta does not have. Fairness findings are not bound (a four-fifths flag is a screening signal, derived from obligations that can be). It also does not verify the chain; `verify_chain_integrity` does that.
 
 **Binding an entry to a run.** `entry_content`, `entry_digest` and `binds` take an optional `context` and `decision_digest` (beta's digest of the Decision, bound to the same run). They come together or not at all. The entry must have been recorded under that run and event and be about that entity, or the connector raises; the content then gains `context` and `decision_digest`. Without them every existing digest is unchanged. An entry's `run_id` and `event_id` appear in its content whenever it has them.
+
+**Ledger receipt.** `verification_receipt(ledger, checkpoint, *, context, decision_digest, index=-1)` raises `ValueError` unless `ledger.verify_chain_integrity()` and `ledger.verify_against(checkpoint)` are both true (so an empty, foreign, rolled-back or mistyped checkpoint, or a broken chain, yields nothing). It returns a plain dict: `schema` `"ledger-receipt/1"`, `entry_digest` (`cns.gate.subject_digest` of `entry_content` for the entry at `index`, so it changes with the Decision, the run, the context and the decision digest), the resolved non-negative `index`, `ledger_length`, `ledger_head`, `checkpoint_length`, `checkpoint_head` and a validated copy of the `context`. It is what delta shows a verifier; the ledger itself is not handed to CNS. **It is not signed.** It states that, at the moment it was made, the ledger verified and contained the history of the checkpoint it was given. A caller who fabricates a ledger and a consistent checkpoint, or simply builds the dict by hand, is not stopped by anything here; the receipt is only as good as where the checkpoint was kept.
 
 The CNS digest is separate from the ledger's `immutable_hash` chain and from the obligation's `decision_fingerprint` link, both unchanged and unaware of CNS. It binds a verdict to the record exactly as stored, chain hashes included.
 

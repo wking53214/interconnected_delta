@@ -75,7 +75,7 @@ from typing import Any, Dict, Optional
 from beta import Decision
 
 from .context import check_context, check_digest
-from .ledger import LedgerEntry
+from .ledger import DecisionLedger, LedgerCheckpoint, LedgerEntry
 from .obligation import OutcomeObligation
 
 __all__ = [
@@ -88,12 +88,15 @@ __all__ = [
     "entry_digest",
     "obligation_content",
     "obligation_digest",
+    "verification_receipt",
+    "RECEIPT_SCHEMA",
 ]
 
 INSTALL_HINT = "pip install 'delta[cns] @ git+https://github.com/wking53214/interconnected_delta'"
 
 ENTRY_SUBJECT = "delta.ledger_entry"
 OBLIGATION_SUBJECT = "delta.outcome_obligation"
+RECEIPT_SCHEMA = "ledger-receipt/1"
 
 
 class CnsNotInstalled(ImportError):
@@ -178,6 +181,8 @@ def _decision_content(decision: Any) -> Dict[str, Any]:
     # Present only when the Decision recorded one, exactly as beta's own connector does it.
     if getattr(decision, "keyset_fingerprint", ""):
         content["keyset_fingerprint"] = check_digest(decision.keyset_fingerprint, "Decision.keyset_fingerprint")
+    if getattr(decision, "content_fingerprint", ""):
+        content["content_fingerprint"] = check_digest(decision.content_fingerprint, "Decision.content_fingerprint")
     return content
 
 
@@ -303,3 +308,49 @@ def binds(result: Any, record: Any, *, subject: Optional[str] = None, **run: Any
             f"expected a delta.ledger.LedgerEntry or delta.obligation.OutcomeObligation; "
             f"got {type(record).__name__}")
     return bool(result.binds(default if subject is None else subject, digest))
+
+
+def verification_receipt(
+    ledger: DecisionLedger,
+    checkpoint: LedgerCheckpoint,
+    *,
+    context: Mapping,
+    decision_digest: str,
+    index: int = -1,
+) -> Dict[str, Any]:
+    """A plain dict stating what this ledger showed about one entry, for a verifier outside delta to check.
+
+    Raises ``ValueError`` unless ``ledger.verify_chain_integrity()`` and ``ledger.verify_against(checkpoint)`` are both
+    true, so an empty, foreign, rolled-back or rewritten-past checkpoint, or a broken chain, yields no receipt. The
+    receipt carries the entry's CNS binding digest (``entry_content`` for that entry under ``context`` and
+    ``decision_digest``, so it cannot be reused for other content), the resolved non-negative ``index``, the ledger's
+    length and head, the checkpoint's length and head, and a validated copy of the context.
+
+    It is not signed and proves nothing by itself: anyone who can build a ledger and a checkpoint can build a
+    consistent receipt. It is only as good as where the checkpoint was kept. The ledger is not handed to CNS.
+    """
+    gate = _cns_gate()
+    if not isinstance(ledger, DecisionLedger):
+        raise TypeError(f"expected a delta.ledger.DecisionLedger; got {type(ledger).__name__}")
+    if not ledger.verify_chain_integrity():
+        raise ValueError("the ledger's chain does not verify, so no receipt is issued")
+    if not ledger.verify_against(checkpoint):
+        raise ValueError("the checkpoint is empty, foreign, mistyped or not contained in this ledger, so no receipt is issued")
+    entries = list(ledger.entries)
+    if type(index) is not int:
+        raise TypeError(f"index must be an int; got {type(index).__name__}")
+    resolved = index + len(entries) if index < 0 else index
+    if not 0 <= resolved < len(entries):
+        raise ValueError(f"index {index} is out of range for a ledger of {len(entries)} entries")
+    ctx = check_context(context)
+    content = entry_content(entries[resolved], context=ctx, decision_digest=decision_digest)
+    return {
+        "schema": RECEIPT_SCHEMA,
+        "entry_digest": gate.subject_digest(content),
+        "index": resolved,
+        "ledger_length": len(entries),
+        "ledger_head": ledger.chain_head,
+        "checkpoint_length": checkpoint.length,
+        "checkpoint_head": checkpoint.head,
+        "context": ctx,
+    }
