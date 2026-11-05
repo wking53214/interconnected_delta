@@ -66,6 +66,7 @@ Install with the extra:
 ``pip install 'delta[cns] @ git+https://github.com/wking53214/interconnected_delta'``.
 """
 
+import hashlib
 import importlib
 import re
 from collections.abc import Mapping
@@ -76,7 +77,7 @@ from typing import Any, Dict, Optional
 from beta import Decision
 
 from .context import check_context, check_digest
-from .ledger import DecisionLedger, LedgerCheckpoint, LedgerEntry
+from .ledger import DecisionLedger, LedgerCheckpoint, LedgerEntry, _canonical_subset, _hash_dict
 from .obligation import OutcomeObligation
 
 __all__ = [
@@ -336,23 +337,25 @@ def verification_receipt(
     gate = _cns_gate()
     if not isinstance(ledger, DecisionLedger):
         raise TypeError(f"expected a delta.ledger.DecisionLedger; got {type(ledger).__name__}")
-    if not ledger.verify_chain_integrity():
+    # One locked snapshot of entries, head and length. Everything below, the verification and every receipt field, is
+    # built from it alone, so a list that answers differently on a later read, or an append that lands meanwhile,
+    # cannot put a value on the receipt that was not verified.
+    entries, ledger_head, ledger_length = ledger.snapshot()
+    if not DecisionLedger._verify_snapshot(entries, ledger_head, ledger.require_context):
         raise ValueError("the ledger's chain does not verify, so no receipt is issued")
     if not isinstance(checkpoint, LedgerCheckpoint):
         raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
-    # Read the checkpoint exactly once. Everything below, the verification and the receipt fields, uses only these
-    # snapshotted values, so an object that answers differently on a later read cannot put unverified values on a receipt.
+    # Read the checkpoint exactly once, for the same reason.
     length, head = checkpoint.length, checkpoint.head
     if type(length) is not int or type(head) is not str or not _HEX64.fullmatch(head):
         raise ValueError("the checkpoint is empty, foreign, mistyped or not contained in this ledger, so no receipt is issued")
-    if not ledger.verify_against(LedgerCheckpoint(length, head)):
+    if not DecisionLedger._checkpoint_fits(entries, LedgerCheckpoint(length, head)):
         raise ValueError("the checkpoint is empty, foreign, mistyped or not contained in this ledger, so no receipt is issued")
-    entries = list(ledger.entries)
     if type(index) is not int:
         raise TypeError(f"index must be an int; got {type(index).__name__}")
-    resolved = index + len(entries) if index < 0 else index
-    if not 0 <= resolved < len(entries):
-        raise ValueError(f"index {index} is out of range for a ledger of {len(entries)} entries")
+    resolved = index + ledger_length if index < 0 else index
+    if not 0 <= resolved < ledger_length:
+        raise ValueError(f"index {index} is out of range for a ledger of {ledger_length} entries")
     if resolved >= length:
         raise ValueError(
             f"entry {resolved} is not covered by the checkpoint (length {length}); a checkpoint taken before an entry "
@@ -360,6 +363,13 @@ def verification_receipt(
         )
     ctx = check_context(context)
     entry = entries[resolved]
+    # The entry's own hash is recomputed from the snapshotted entry and must equal the one the receipt will state.
+    recomputed = hashlib.sha256(
+        (entry.previous_hash + _hash_dict(_canonical_subset(
+            entry.audit_id, entry.timestamp, entry.decision, entry.run_id, entry.event_id))).encode()
+    ).hexdigest()
+    if recomputed != entry.immutable_hash:
+        raise ValueError("the entry's hash does not match its content, so no receipt is issued")
     content = entry_content(entry, context=ctx, decision_digest=decision_digest)
     return {
         "schema": RECEIPT_SCHEMA,
@@ -367,8 +377,8 @@ def verification_receipt(
         "index": resolved,
         "entry_hash": entry.immutable_hash,
         "previous_hash": entry.previous_hash,
-        "ledger_length": len(entries),
-        "ledger_head": ledger.chain_head,
+        "ledger_length": ledger_length,
+        "ledger_head": ledger_head,
         "checkpoint_length": length,
         "checkpoint_head": head,
         "context": ctx,
