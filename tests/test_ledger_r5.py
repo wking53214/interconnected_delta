@@ -210,3 +210,47 @@ def test_a_receipt_states_exactly_the_values_that_were_verified():
         return
     assert (receipt["checkpoint_length"], receipt["checkpoint_head"]) == (honest.length, honest.head)
     assert object.__getattribute__(liar, "_counts") == {"length": 1, "head": 1}
+
+
+# --- Step 16: the checkpoint must cover the entry; the receipt carries the entry's own hashes -----------------------
+
+def test_a_receipt_has_exactly_ten_fields_including_the_entry_hashes():
+    pytest.importorskip("cns.gate")
+    from delta.cns_connector import verification_receipt
+
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(1))
+    ledger.append(decision(1), context=ctx(2))
+    r = verification_receipt(ledger, ledger.checkpoint(), context=ctx(1), decision_digest="a" * 64, index=0)
+    assert list(r) == ["schema", "entry_digest", "index", "entry_hash", "previous_hash", "ledger_length",
+                       "ledger_head", "checkpoint_length", "checkpoint_head", "context"]
+    assert r["entry_hash"] == ledger.entries[0].immutable_hash
+    assert r["previous_hash"] == ledger.entries[0].previous_hash
+
+
+def test_an_entry_newer_than_the_checkpoint_gets_no_receipt():
+    pytest.importorskip("cns.gate")
+    from delta.cns_connector import verification_receipt
+
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(1))
+    held = ledger.checkpoint()
+    ledger.append(decision(1), context=ctx(2))
+    with pytest.raises(ValueError, match="not covered"):
+        verification_receipt(ledger, held, context=ctx(2), decision_digest="a" * 64)
+
+
+def test_replacing_the_entry_the_checkpoint_does_not_cover_is_refused():
+    pytest.importorskip("cns.gate")
+    from delta.cns_connector import verification_receipt
+
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(decision(0), context=ctx(1))
+    held = ledger.checkpoint()  # length 1: covers entry 0 only
+    ledger.append(decision(1), context=ctx(2))
+    ledger.entries.pop()
+    ledger.chain_head = ledger.entries[-1].immutable_hash  # drop entry 1
+    ledger.append(decision(2), context=ctx(2))  # a different Decision in its place
+    assert ledger.verify_chain_integrity() and ledger.verify_against(held)
+    with pytest.raises(ValueError, match="not covered"):
+        verification_receipt(ledger, held, context=ctx(2), decision_digest="a" * 64, index=1)

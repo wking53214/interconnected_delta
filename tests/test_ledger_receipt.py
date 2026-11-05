@@ -23,7 +23,7 @@ from delta.context import CONTEXT_SCHEMA  # noqa: E402
 T0 = datetime(2026, 1, 1, 12, 0, 0)
 CTX = {"schema": CONTEXT_SCHEMA, "entity_id": "p1", "event_id": "ev-1", "run_id": "run-1"}
 DD = gate.subject_digest({"label": "beta decision digest"})
-KEYS = ("schema", "entry_digest", "index", "ledger_length", "ledger_head", "checkpoint_length", "checkpoint_head", "context")
+KEYS = ("schema", "entry_digest", "index", "entry_hash", "previous_hash", "ledger_length", "ledger_head", "checkpoint_length", "checkpoint_head", "context")
 
 
 def decision(i=0, **over):
@@ -64,8 +64,8 @@ def test_a_receipt_after_the_ledger_grew_past_the_checkpoint_names_the_requested
     cp = ledger.checkpoint()
     ledger.append(decision(1), context=ctx_n(2))
     first = verification_receipt(ledger, cp, context=CTX, decision_digest=DD, index=0)
-    last = verification_receipt(ledger, cp, context=ctx_n(2), decision_digest=DD)
-    assert (first["index"], last["index"], last["ledger_length"], last["checkpoint_length"]) == (0, 1, 2, 1)
+    last = verification_receipt(ledger, ledger.checkpoint(), context=ctx_n(2), decision_digest=DD)
+    assert (first["index"], last["index"], last["ledger_length"], last["checkpoint_length"]) == (0, 1, 2, 2)
     assert first["entry_digest"] != last["entry_digest"]
 
 

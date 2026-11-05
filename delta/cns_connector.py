@@ -323,9 +323,11 @@ def verification_receipt(
     """A plain dict stating what this ledger showed about one entry, for a verifier outside delta to check.
 
     Raises ``ValueError`` unless ``ledger.verify_chain_integrity()`` and ``ledger.verify_against(checkpoint)`` are both
-    true, so an empty, foreign, rolled-back or rewritten-past checkpoint, or a broken chain, yields no receipt. The
+    true, so an empty, foreign, rolled-back or rewritten-past checkpoint, or a broken chain, yields no receipt, and
+    unless ``0 <= index < checkpoint.length``: the independent checkpoint must cover the entry, and an entry newer
+    than the checkpoint has no independent evidence. The
     receipt carries the entry's CNS binding digest (``entry_content`` for that entry under ``context`` and
-    ``decision_digest``, so it cannot be reused for other content), the resolved non-negative ``index``, the ledger's
+    ``decision_digest``, so it cannot be reused for other content), the resolved non-negative ``index``, the entry's own ``immutable_hash`` (``entry_hash``) and ``previous_hash``, the ledger's
     length and head, the checkpoint's length and head, and a validated copy of the context.
 
     It is not signed and proves nothing by itself: anyone who can build a ledger and a checkpoint can build a
@@ -351,12 +353,20 @@ def verification_receipt(
     resolved = index + len(entries) if index < 0 else index
     if not 0 <= resolved < len(entries):
         raise ValueError(f"index {index} is out of range for a ledger of {len(entries)} entries")
+    if resolved >= length:
+        raise ValueError(
+            f"entry {resolved} is not covered by the checkpoint (length {length}); a checkpoint taken before an entry "
+            f"is no independent evidence about it, so no receipt is issued"
+        )
     ctx = check_context(context)
-    content = entry_content(entries[resolved], context=ctx, decision_digest=decision_digest)
+    entry = entries[resolved]
+    content = entry_content(entry, context=ctx, decision_digest=decision_digest)
     return {
         "schema": RECEIPT_SCHEMA,
         "entry_digest": gate.subject_digest(content),
         "index": resolved,
+        "entry_hash": entry.immutable_hash,
+        "previous_hash": entry.previous_hash,
         "ledger_length": len(entries),
         "ledger_head": ledger.chain_head,
         "checkpoint_length": length,
