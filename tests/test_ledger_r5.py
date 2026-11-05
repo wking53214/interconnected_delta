@@ -274,3 +274,24 @@ def test_a_ledger_without_require_context_still_accepts_a_legacy_decision():
     ledger.append(dataclasses.replace(decision(0), content_fingerprint=""), context=ctx(1))
     ledger.append(dataclasses.replace(decision(1), content_fingerprint=""))
     assert len(ledger.entries) == 2 and ledger.verify_chain_integrity()
+
+
+# --- Step 18: a retry after a raising sink hands the sink the same entry -------------------------------------------
+
+def test_a_retry_after_a_raising_sink_hands_the_sink_the_same_entry():
+    seen = []
+
+    def sink(entry):
+        seen.append(entry)
+        if len(seen) == 1:
+            raise OSError("store unavailable")
+
+    ledger = DecisionLedger(require_context=True, sink=sink)
+    d = decision()
+    with pytest.raises(OSError):
+        ledger.append(d, context=ctx(1))
+    assert len(ledger.entries) == 0
+    entry = ledger.append(d, context=ctx(1))
+    assert len(seen) == 2
+    assert (seen[0].audit_id, seen[0].immutable_hash) == (seen[1].audit_id, seen[1].immutable_hash)
+    assert seen[1] == entry

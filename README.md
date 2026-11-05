@@ -54,6 +54,8 @@ Each item below has a test in `tests/test_ledger_r4.py` (or the file named).
 
 `DecisionLedger(sink=callable)` calls `sink(entry)` with the exact entry that will be stored, after it is built and before any state changes. If the sink raises, nothing was recorded and the exception propagates; the sink is not called for a refused append. Its purpose is to let a caller write each entry somewhere durable before the ledger accepts it. delta supplies the hook, not the storage. If the sink succeeds and a later step then fails, the sink has seen an entry the ledger did not record; the caller must reconcile (tested).
 
+**Sink contract.** The sink runs before any state change, so a sink that writes to its own store and then raises leaves a write that the ledger does not have. A sink must therefore be idempotent, keyed by the entry's `audit_id` or `immutable_hash` (a retry after a raising sink hands it the same entry, so it can deduplicate); it must not call or modify the ledger (an `append` from inside a sink raises `RuntimeError`); and it is not a transaction.
+
 ### Integrity, availability, durability
 
 These are three different properties and delta gives only the first, and only conditionally.
