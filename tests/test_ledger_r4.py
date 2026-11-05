@@ -213,3 +213,51 @@ def test_a_refused_append_changes_nothing_and_the_event_stays_free():
     assert state(ledger) == before
     ledger.append(decision(1), context=ctx(1))
     assert len(ledger) == 2
+
+
+# --- Step 5: the sink hook ------------------------------------------------------------------------------------------
+
+def test_the_sink_sees_the_exact_entry_that_is_stored_and_sees_it_before_state_changes():
+    seen, at_call = [], []
+    ledger = DecisionLedger(require_context=True, sink=lambda e: (seen.append(e), at_call.append((len(ledger), ledger.chain_head))))
+    entry = ledger.append(decision(0), context=ctx(0))
+    assert seen == [entry] and seen[0] is entry and ledger.entries[0] is entry
+    assert at_call == [(0, GENESIS)]
+
+
+def test_a_raising_sink_leaves_the_ledger_unchanged_and_the_next_append_works():
+    calls = []
+
+    def sink(entry):
+        calls.append(entry)
+        if len(calls) == 2:
+            raise OSError("disk full")
+
+    ledger = DecisionLedger(require_context=True, sink=sink)
+    ledger.append(decision(0), context=ctx(0))
+    before = state(ledger)
+    with pytest.raises(OSError, match="disk full"):
+        ledger.append(decision(1), context=ctx(1))
+    assert state(ledger) == before
+    again = ledger.append(decision(1), context=ctx(1))
+    assert len(ledger) == 2 and ledger.verify_chain_integrity() and calls[-1] is again
+
+
+def test_the_sink_is_not_called_for_a_refused_append():
+    calls = []
+    ledger = DecisionLedger(require_context=True, sink=calls.append)
+    ledger.append(decision(0), context=ctx(0))
+    calls.clear()
+    with pytest.raises(DuplicateRecordError):
+        ledger.append(decision(1), context={**ctx(1), "event_id": "ev-0"})
+    with pytest.raises(Exception):
+        ledger.append(decision(1))  # no context on a require_context ledger
+    with pytest.raises(TypeError):
+        ledger.append(object())
+    assert calls == []
+
+
+def test_a_sink_must_be_callable_and_none_is_the_default():
+    with pytest.raises(TypeError):
+        DecisionLedger(sink="not callable")
+    assert len(DecisionLedger(sink=None).append(decision(0)).audit_id) == 16

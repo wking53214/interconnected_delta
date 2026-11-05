@@ -48,7 +48,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from beta import Decision
 
@@ -138,7 +138,13 @@ def _hash_dict(d: dict) -> str:
 
 
 class DecisionLedger:
-    def __init__(self, require_context: bool = False) -> None:
+    def __init__(self, require_context: bool = False, sink: Optional[Callable[[LedgerEntry], None]] = None) -> None:
+        # sink: an optional callable(entry) called with each entry after it is built and before any state changes, so a
+        # caller can write it somewhere durable first. If it raises, nothing was recorded and the exception propagates.
+        # This ledger supplies the hook; it does not supply the storage.
+        if sink is not None and not callable(sink):
+            raise TypeError(f"sink must be callable or None; got {type(sink).__name__}")
+        self._sink = sink
         # require_context=True: every append must carry a pipeline context. Left False the ledger still records an
         # unbound Decision as it always did, but such an entry has no run, and CNS's strict check refuses it.
         self.require_context = require_context
@@ -208,6 +214,8 @@ class DecisionLedger:
             run_id=run_id,
             event_id=event_id,
         )
+        if self._sink is not None:
+            self._sink(entry)
         # Every fallible step is above. The two updates below are made together: if either is interrupted the other
         # is put back, so head, entries and length are exactly as before and the next append works.
         previous_head, length = self.chain_head, len(self.entries)
