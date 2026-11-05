@@ -45,10 +45,12 @@ import dataclasses
 import hashlib
 import json
 import re
+import sys
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import FrameType
 from typing import Callable, List, Optional
 
 from beta import Decision
@@ -66,6 +68,27 @@ class LedgerCheckpoint:
 
     length: int
     head: str
+
+    def to_dict(self) -> dict:
+        """A plain JSON-able dict: ``{"length": int, "head": str}``."""
+        return {"length": self.length, "head": self.head}
+
+    @classmethod
+    def from_dict(cls, data: Mapping) -> "LedgerCheckpoint":
+        """The checkpoint ``to_dict`` wrote. A dict with exactly the keys ``length`` and ``head``, ``length`` exactly an
+        ``int`` that is not negative (a bool is not one) and ``head`` exactly a ``str`` of 64 lowercase hex digits;
+        anything else is a ``ValueError``. A length of 0 is a well-formed checkpoint that proves nothing: verifying
+        against it always fails."""
+        if type(data) is not dict:
+            raise ValueError(f"a checkpoint is a dict; got {type(data).__name__}")
+        if set(data) != {"length", "head"}:
+            raise ValueError(f"a checkpoint has exactly the keys length and head; got {sorted(map(str, data))}")
+        length, head = data["length"], data["head"]
+        if type(length) is not int or length < 0:
+            raise ValueError(f"checkpoint length must be a non-negative int; got {length!r}")
+        if type(head) is not str or not _HEX64.fullmatch(head):
+            raise ValueError("checkpoint head must be a str of 64 lowercase hex digits")
+        return cls(length, head)
 
 
 class DuplicateRecordError(ValueError):
@@ -97,11 +120,15 @@ class LedgerEntry:
     event_id: Optional[str] = None
 
 
-_STR_FIELDS = ("entity_id", "decision_id", "decision", "decision_fingerprint")
+_STR_FIELDS = (
+    "entity_id", "decision_id", "decision", "decision_fingerprint", "reasoning", "instructions",
+    "content_fingerprint", "keyset_fingerprint", "confidence_basis",
+)
 
 
 def _check_exact_types(decision: Decision, timestamp: Optional[datetime]) -> None:
-    """The fields the ledger's policy compares must be exactly ``str`` and ``datetime``: a subclass can lie about its
+    """Every string field and tuple element must be exactly ``str``, confidence exactly ``float`` or ``int`` (never a
+    bool) and the times exactly ``datetime``: a subclass can lie about its
     own equality, ordering or text, and so be judged one way and recorded as another."""
     for name in _STR_FIELDS:
         if type(getattr(decision, name)) is not str:
@@ -110,6 +137,8 @@ def _check_exact_types(decision: Decision, timestamp: Optional[datetime]) -> Non
         for item in getattr(decision, name):
             if type(item) is not str:
                 raise TypeError(f"every element of Decision.{name} must be exactly a str; got {type(item).__name__}")
+    if type(decision.confidence) not in (float, int):
+        raise TypeError(f"Decision.confidence must be exactly a float or an int; got {type(decision.confidence).__name__}")
     if type(decision.timestamp) is not datetime:
         raise TypeError(f"Decision.timestamp must be exactly a datetime; got {type(decision.timestamp).__name__}")
     if timestamp is not None and type(timestamp) is not datetime:
@@ -158,6 +187,111 @@ def _decision_subset(entry_audit_id: str, timestamp: datetime, decision: Decisio
     }
 
 
+EXPORT_SCHEMA = "ledger-export/1"
+_DECISION_STR_KEYS = (
+    "entity_id", "decision_id", "decision", "decision_fingerprint", "audit_hash", "reasoning", "instructions",
+    "confidence_basis", "keyset_fingerprint", "content_fingerprint",
+)
+_DECISION_KEYS = frozenset(_DECISION_STR_KEYS) | {"timestamp", "confidence", *_TUPLE_FIELDS}
+_ENTRY_KEYS = frozenset({"audit_id", "timestamp", "previous_hash", "immutable_hash", "run_id", "event_id", "decision"})
+
+
+def _decision_to_dict(decision: Decision) -> dict:
+    out = {name: getattr(decision, name) for name in _DECISION_STR_KEYS}
+    out["timestamp"] = decision.timestamp.isoformat()
+    out["confidence"] = decision.confidence
+    for name in _TUPLE_FIELDS:
+        out[name] = list(getattr(decision, name))
+    return out
+
+
+def _parse_time(value: object, where: str) -> datetime:
+    if type(value) is not str:
+        raise ValueError(f"{where} must be an isoformat str; got {type(value).__name__}")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{where} is not an isoformat time: {value!r}") from exc
+    if type(parsed) is not datetime or parsed.isoformat() != value:
+        raise ValueError(f"{where} is not in canonical isoformat: {value!r}")
+    return parsed
+
+
+def _entry_from_dict(i: int, raw: object, require_context: bool) -> LedgerEntry:
+    where = f"entry {i}"
+    if type(raw) is not dict or set(raw) != _ENTRY_KEYS:
+        got = sorted(map(str, raw)) if type(raw) is dict else type(raw).__name__
+        raise ValueError(f"{where}: must be a dict with exactly the keys {sorted(_ENTRY_KEYS)}; got {got}")
+    for name in ("audit_id", "previous_hash", "immutable_hash"):
+        if type(raw[name]) is not str:
+            raise ValueError(f"{where}: {name} must be a str")
+    for name in ("previous_hash", "immutable_hash"):
+        if not _HEX64.fullmatch(raw[name]):
+            raise ValueError(f"{where}: {name} must be 64 lowercase hex digits")
+    for name in ("run_id", "event_id"):
+        if raw[name] is not None and type(raw[name]) is not str:
+            raise ValueError(f"{where}: {name} must be a str or null")
+    stamp = _parse_time(raw["timestamp"], f"{where}: timestamp")
+    d = raw["decision"]
+    if type(d) is not dict or set(d) != _DECISION_KEYS:
+        got = sorted(map(str, d)) if type(d) is dict else type(d).__name__
+        raise ValueError(f"{where}: decision must be a dict with exactly the keys {sorted(_DECISION_KEYS)}; got {got}")
+    fields: dict = {}
+    for name in _DECISION_STR_KEYS:
+        if type(d[name]) is not str:
+            raise ValueError(f"{where}: decision.{name} must be a str; got {type(d[name]).__name__}")
+        fields[name] = d[name]
+    for name in _TUPLE_FIELDS:
+        if type(d[name]) is not list or any(type(item) is not str for item in d[name]):
+            raise ValueError(f"{where}: decision.{name} must be a list of str")
+        fields[name] = tuple(d[name])
+    if type(d["confidence"]) not in (float, int):
+        raise ValueError(f"{where}: decision.confidence must be a float or an int; got {type(d['confidence']).__name__}")
+    fields["confidence"] = d["confidence"]
+    fields["timestamp"] = _parse_time(d["timestamp"], f"{where}: decision.timestamp")
+    try:
+        decision = Decision(**fields)
+        _check_exact_types(decision, stamp)
+        Decision.validate(decision, check_fingerprint=require_context)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"{where}: the Decision is not valid: {exc}") from exc
+    return LedgerEntry(
+        audit_id=raw["audit_id"], timestamp=stamp, decision=decision, previous_hash=raw["previous_hash"],
+        immutable_hash=raw["immutable_hash"], run_id=raw["run_id"], event_id=raw["event_id"],
+    )
+
+
+def verify_export(
+    data: Mapping, checkpoint: Optional[object] = None, *, require_context: Optional[bool] = None
+) -> "DecisionLedger":
+    """Verify an ``export()`` and return the rebuilt ledger, or raise ``ValueError`` naming the first failure.
+
+    Without ``checkpoint`` this is integrity only, no rollback detection: it shows the export is a consistent chain,
+    not that it is the whole one (an attacker who can rewrite the export can truncate it, or rewrite and re-chain it).
+    ``checkpoint`` (a ``LedgerCheckpoint`` or its ``to_dict`` form) must come from storage the producer cannot rewrite;
+    the export must then contain the history it names (``verify_against``). ``require_context``, when given, must equal
+    the flag in the export: a consumer that requires context should say so, because the flag travels with the export.
+    """
+    ledger = DecisionLedger.from_export(data)
+    if require_context is not None:
+        if type(require_context) is not bool:
+            raise TypeError("require_context must be a bool or None")
+        if ledger.require_context is not require_context:
+            raise ValueError(f"the export says require_context={ledger.require_context}; the verifier requires {require_context}")
+    if checkpoint is not None:
+        if type(checkpoint) is dict:
+            checkpoint = LedgerCheckpoint.from_dict(checkpoint)
+        if not isinstance(checkpoint, LedgerCheckpoint):
+            raise TypeError(f"checkpoint must be a LedgerCheckpoint or its dict form; got {type(checkpoint).__name__}")
+        if type(checkpoint.length) is int and checkpoint.length > len(ledger):
+            raise ValueError(
+                f"the export holds {len(ledger)} entries but the held checkpoint names {checkpoint.length}: the export was truncated or is another ledger"
+            )
+        if not ledger.verify_against(checkpoint):
+            raise ValueError("the export does not contain the history the held checkpoint recorded (empty, foreign or rewritten)")
+    return ledger
+
+
 def _hash_dict(d: dict) -> str:
     return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -174,8 +308,9 @@ class DecisionLedger:
         # unbound Decision as it always did, but such an entry has no run, and CNS's strict check refuses it.
         self.require_context = require_context
         self._lock = threading.Lock()
-        # Set on the calling thread only while the sink runs (the lock is held then and is not reentrant).
-        self._sink_state = threading.local()
+        # An append whose commit was cut short (head and entries not both written); set only under the lock, undone by
+        # _heal before the next read or write. See _append_locked.
+        self._pending: Optional[tuple] = None
         self.entries: List[LedgerEntry] = []
         self.chain_head: str = hashlib.sha256(_GENESIS_SEED).hexdigest()
 
@@ -199,7 +334,7 @@ class DecisionLedger:
         """
         # Exactly a beta.Decision, judged by beta's own validate: an object that supplies its own validate (a subclass
         # that does nothing, a namespace with a lambda) would otherwise choose whether it is judged at all.
-        if getattr(self._sink_state, "active", False):
+        if self._inside_sink():
             raise RuntimeError("append from inside a sink is not allowed")
         if type(decision) is not Decision:
             raise TypeError(f"delta records beta.Decision only; got {type(decision).__name__}")
@@ -214,6 +349,7 @@ class DecisionLedger:
     def _append_locked(
         self, decision: Decision, timestamp: Optional[datetime], context: Optional[Mapping]
     ) -> LedgerEntry:
+        self._heal()
         self._check_head()
         run_id = event_id = None
         if context is None and self.require_context:
@@ -269,22 +405,47 @@ class DecisionLedger:
             event_id=event_id,
         )
         if self._sink is not None:
-            self._sink_state.active = True
-            try:
-                self._sink(entry)
-            finally:
-                self._sink_state.active = False
-        # Every fallible step is above. The two updates below are made together: if either is interrupted the other
-        # is put back, so head, entries and length are exactly as before and the next append works.
+            self._call_sink(entry)
+        # Every fallible step is above. The two writes below are one commit. The marker is set first, so a commit that is
+        # cut short at any point, even by a second interrupt inside the rollback, is recorded as pending and is undone
+        # by _heal (before the next append, snapshot or verification) instead of leaving an entry the head does not name.
         previous_head, length = self.chain_head, len(self.entries)
+        self._pending = (previous_head, length, entry)
         try:
             self.entries.append(entry)
             self.chain_head = immutable_hash
         except BaseException:
+            self._heal()
+            raise
+        self._pending = None
+        return entry
+
+    def _call_sink(self, entry: LedgerEntry) -> None:
+        # "Inside a sink" is read from the call stack (see _inside_sink), so there is no flag to be left set by an
+        # interrupt: the guard ends exactly when this call does.
+        self._sink(entry)  # type: ignore[misc]
+
+    def _inside_sink(self) -> bool:
+        """Whether this thread is inside this ledger's sink call: the lock is held then and is not reentrant."""
+        frame: Optional[FrameType] = sys._getframe(1)
+        while frame is not None:
+            if frame.f_code is _CALL_SINK_CODE and frame.f_locals.get("self") is self:
+                return True
+            frame = frame.f_back
+        return False
+
+    def _heal(self) -> None:
+        """Undo a commit that was cut short, or acknowledge one that completed. Idempotent: the marker is cleared last,
+        so an interrupt inside the healing leaves it to be healed again. Called with the lock held."""
+        pending = self._pending
+        if pending is None:
+            return
+        previous_head, length, entry = pending
+        done = len(self.entries) == length + 1 and self.entries[-1] is entry and self.chain_head == entry.immutable_hash
+        if not done:
             del self.entries[length:]
             self.chain_head = previous_head
-            raise
-        return entry
+        self._pending = None
 
     def _check_head(self) -> None:
         """O(1): the head must name the last entry (or genesis for an empty ledger). A full re-verification on every
@@ -360,9 +521,42 @@ class DecisionLedger:
                     f"{decision.entity_id!r} ({earlier.decision.timestamp.isoformat()})"
                 )
 
-    def verify_chain_integrity(self) -> bool:
+    def snapshot(self) -> tuple:
+        """``(entries, chain_head, length)`` taken together, once, under the ledger's lock.
+
+        ``entries`` is a tuple, so what is read from it later cannot change; the head and the length belong to those
+        very entries. A verifier that must state facts about the ledger (verification_receipt) reads this once and
+        uses only these values. Called from inside a sink (this thread already holds the lock, and nothing else can
+        append meanwhile) it reads without taking the lock again.
+        """
+        if self._inside_sink():
+            entries = tuple(self.entries)
+            return entries, self.chain_head, len(entries)
+        with self._lock:
+            self._heal()
+            entries = tuple(self.entries)
+            return entries, self.chain_head, len(entries)
+
+    @staticmethod
+    def _verify_snapshot(entries: tuple, head: str, rejudge: bool = False) -> bool:
+        """The chain over one snapshot: every entry's recorded types and hash, linked from genesis, ending at ``head``.
+
+        With ``rejudge`` every stored Decision is also put through ``Decision.validate(check_fingerprint=True)``, as it
+        was when recorded, so a field no hash covers (confidence_basis) or a fingerprint that no longer fits the
+        Decision is found too."""
         expected = hashlib.sha256(_GENESIS_SEED).hexdigest()
-        for entry in self.entries:
+        for entry in entries:
+            if type(entry) is not LedgerEntry or type(entry.decision) is not Decision:
+                return False
+            try:
+                _check_exact_types(entry.decision, entry.timestamp)
+            except TypeError:
+                return False
+            if rejudge:
+                try:
+                    Decision.validate(entry.decision, check_fingerprint=True)
+                except (ValueError, TypeError):
+                    return False
             canonical = _canonical_subset(
                 entry.audit_id, entry.timestamp, entry.decision, entry.run_id, entry.event_id
             )
@@ -371,7 +565,20 @@ class DecisionLedger:
             if computed != entry.immutable_hash or entry.previous_hash != expected:
                 return False
             expected = entry.immutable_hash
-        return expected == self.chain_head
+        return expected == head
+
+    @staticmethod
+    def _checkpoint_fits(entries: tuple, checkpoint: "LedgerCheckpoint") -> bool:
+        length, head = checkpoint.length, checkpoint.head
+        if type(length) is not int or length < 1 or length > len(entries):
+            return False
+        if type(head) is not str or not _HEX64.fullmatch(head):
+            return False
+        return entries[length - 1].immutable_hash == head
+
+    def verify_chain_integrity(self) -> bool:
+        entries, head, _ = self.snapshot()
+        return self._verify_snapshot(entries, head, self.require_context)
 
     def checkpoint(self) -> LedgerCheckpoint:
         """The ledger's current length and head, to be held somewhere its holder cannot rewrite.
@@ -395,14 +602,89 @@ class DecisionLedger:
         """
         if not isinstance(checkpoint, LedgerCheckpoint):
             raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
+        entries, chain_head, _ = self.snapshot()
         length, head = checkpoint.length, checkpoint.head
-        if type(length) is not int or length < 1 or length > len(self.entries):
+        if not self._checkpoint_fits(entries, LedgerCheckpoint(length, head)):
             return False
+        return self._verify_snapshot(entries, chain_head, self.require_context)
+
+    def export(self) -> dict:
+        """The whole ledger as a plain JSON-able dict, for a verifier in another process (``from_export``).
+
+        ``{"schema": "ledger-export/1", "require_context", "chain_head", "entries": [...]}``. Each entry carries every
+        ``LedgerEntry`` field (timestamps as isoformat text) and the whole Decision (tuples as lists). It is built from
+        one locked snapshot, and refused (``ValueError``) when that snapshot does not verify, so what is written is
+        what verified. It carries no signature; see the README for what a consumer must hold independently.
+        """
+        entries, head, _ = self.snapshot()
+        rejudge = self.require_context
+        if not self._verify_snapshot(entries, head, rejudge):
+            raise ValueError("the ledger's chain does not verify, so it is not exported")
+        out = []
+        for e in entries:
+            if type(e.decision.audit_hash) is not str:
+                raise ValueError("Decision.audit_hash must be exactly a str to be exported")
+            if any(v is not None and type(v) is not str for v in (e.run_id, e.event_id)):
+                raise ValueError("an entry's run_id and event_id must be exactly a str or None to be exported")
+            out.append({
+                "audit_id": e.audit_id,
+                "timestamp": e.timestamp.isoformat(),
+                "previous_hash": e.previous_hash,
+                "immutable_hash": e.immutable_hash,
+                "run_id": e.run_id,
+                "event_id": e.event_id,
+                "decision": _decision_to_dict(e.decision),
+            })
+        return {"schema": EXPORT_SCHEMA, "require_context": rejudge, "chain_head": head, "entries": out}
+
+    @classmethod
+    def from_export(cls, data: Mapping) -> "DecisionLedger":
+        """Rebuild a ledger from ``export()``'s dict (after ``json.loads`` if it was text), trusting none of it.
+
+        Every field's type is checked exactly, every hash is recomputed from the content and must equal the stored one,
+        each entry must start from the one before (genesis for the first), the head must be the last hash, and on a
+        ledger exported with ``require_context`` every Decision is put through ``Decision.validate(check_fingerprint=True)``.
+        The first failure is a ``ValueError`` naming the entry and the field. It does not replay the append policies
+        (events, runs, staleness) and it holds no checkpoint: without one a truncated or wholly rewritten and
+        re-chained export still verifies. Use ``delta.verify_export`` to check a held checkpoint too.
+        """
+        if type(data) is not dict:
+            raise ValueError(f"an export is a dict; got {type(data).__name__}")
+        if set(data) != {"schema", "require_context", "chain_head", "entries"}:
+            raise ValueError(f"an export has exactly the keys schema, require_context, chain_head and entries; got {sorted(map(str, data))}")
+        if data["schema"] != EXPORT_SCHEMA or type(data["schema"]) is not str:
+            raise ValueError(f"unknown export schema {data['schema']!r}; expected {EXPORT_SCHEMA!r}")
+        if type(data["require_context"]) is not bool:
+            raise ValueError("require_context must be a bool")
+        head = data["chain_head"]
         if type(head) is not str or not _HEX64.fullmatch(head):
-            return False
-        if not self.verify_chain_integrity():
-            return False
-        return self.entries[length - 1].immutable_hash == head
+            raise ValueError("chain_head must be a str of 64 lowercase hex digits")
+        if type(data["entries"]) is not list:
+            raise ValueError("entries must be a list")
+        require_context = data["require_context"]
+        expected = hashlib.sha256(_GENESIS_SEED).hexdigest()
+        built = []
+        for i, raw in enumerate(data["entries"]):
+            entry = _entry_from_dict(i, raw, require_context)
+            if entry.previous_hash != expected:
+                raise ValueError(f"entry {i}: previous_hash does not continue the chain (an entry is missing, moved or edited)")
+            computed = hashlib.sha256(
+                (entry.previous_hash + _hash_dict(_canonical_subset(
+                    entry.audit_id, entry.timestamp, entry.decision, entry.run_id, entry.event_id))).encode()
+            ).hexdigest()
+            if computed != entry.immutable_hash:
+                raise ValueError(f"entry {i}: immutable_hash does not match the entry's content (the entry or its hash was edited)")
+            expected = entry.immutable_hash
+            built.append(entry)
+        if expected != head:
+            raise ValueError("chain_head is not the hash of the last entry (the export was truncated, extended or re-headed)")
+        ledger = cls(require_context=require_context)
+        ledger.entries = built
+        ledger.chain_head = head
+        return ledger
 
     def __len__(self) -> int:
         return len(self.entries)
+
+
+_CALL_SINK_CODE = DecisionLedger._call_sink.__code__
