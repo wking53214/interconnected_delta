@@ -85,6 +85,16 @@ These are three different properties and delta gives only the first, and only co
 - **Availability** (the ledger can still be written after a fault): an exception, including a `KeyboardInterrupt` at any line, inside `append` or inside the sink leaves the ledger writable and consistent (head, entries and the sink guard agree; a commit cut short is undone before the next call). A head that disagrees with its last entry still stops all recording (`LedgerCorruptError`); there is no repair path.
 - **Durability** (survives a restart): **not provided.** The ledger is in memory. A restart loses it, and a freshly created ledger verifies cleanly, accepts the same event again, and fails `verify_against` only for a caller that kept a non-empty checkpoint taken before the restart (tested). A file store and checkpoint custody are **not implemented here**; they are deferred pending confirmation of what `sentinel_os` already provides.
 
+### Signing
+
+`delta.signing` is a hook, not a signer. `receipt_signing_input(receipt)` returns the bytes to sign: the domain tag `delta-ledger-receipt-signature/1\n` followed by the receipt as canonical ASCII JSON (sorted keys, no spaces, no NaN). It accepts only an exact `dict` with exactly the ten receipt keys, each of its exact type, and refuses anything else naming the field, so a subclass or a stray key cannot change what is signed. `sign_receipt(receipt, sign)` calls the `sign` callable the deployer hands in and refuses a result that is not exactly non-empty `bytes`. `verify_receipt_signature(receipt, signature, verify)` is `True` only when the deployer's `verify(signing_input, signature)` answers exactly `True`; an exception, any other answer, an empty or non-`bytes` signature, or a receipt that cannot be signed is `False`. delta imports no cryptography and holds no key. The tests use Ed25519 from `cryptography` as the deployer's signer and verifier, in the tests only.
+
+**What a valid signature proves:** the holder of the signing key produced this receipt, for this entry digest, ledger head and checkpoint, and it has not been changed since (a one-field change to any of the ten fields invalidates it; tested).
+
+**What it does not prove:** that the Decision was right; that the key holder is honest or careful (a key holder can sign a receipt for a ledger it rewrote); that the checkpoint inside the receipt was independently custodied (the receipt states the checkpoint, it cannot show where it was kept); or that the key is still trusted.
+
+Key custody, trust, rotation and revocation belong to the deployer's `sign` and `verify` callables. delta defines none of them.
+
 ### Obligations
 
 Not every decision owes one. A `decision_id` with no registered `MaturationRule` opens nothing (IVR quality settled at hangup is the motivating case). `open_for_decision` is thread-safe (check-then-insert under a lock). Duplicate open of the same `decision_fingerprint:kind` raises.
