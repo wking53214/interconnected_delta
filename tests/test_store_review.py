@@ -290,3 +290,48 @@ def test_f8_a_verified_existing_file_still_gates_forward_only(tmp_path):
         store.write(LedgerCheckpoint(4, hashlib.sha256(b"h4").hexdigest()), sign=sign, verify=verify)
     store.write(LedgerCheckpoint(6, hashlib.sha256(b"h6").hexdigest()), sign=sign, verify=verify)
     assert store.read(verify=verify).length == 6
+
+
+# ---------------------------------------------------------------- F5: signing inputs refuse strings that are not strict UTF-8
+def _receipt(run_id="run"):
+    return {"schema": "s", "entry_digest": "d", "index": 0, "entry_hash": "h", "previous_hash": "p",
+            "ledger_length": 1, "ledger_head": "lh", "checkpoint_length": 1, "checkpoint_head": "ch",
+            "context": {"schema": "c", "entity_id": "e", "event_id": "ev", "run_id": run_id}}
+
+
+def test_f5_a_surrogate_pair_and_the_astral_character_no_longer_share_a_signing_input():
+    from delta.signing import receipt_signing_input
+    astral = receipt_signing_input(_receipt("\U0001F600"))  # a real character still signs
+    assert astral.endswith(b"}")
+    with pytest.raises(ValueError, match="context.run_id"):
+        receipt_signing_input(_receipt(chr(0xD83D) + chr(0xDE00)))
+
+
+@pytest.mark.parametrize("field", ["schema", "entry_digest", "entry_hash", "previous_hash", "ledger_head", "checkpoint_head"])
+def test_f5_a_lone_surrogate_in_any_top_level_string_is_refused_naming_the_field(field):
+    from delta.signing import receipt_signing_input
+    receipt = _receipt()
+    receipt[field] = "a" + chr(0xD800)
+    with pytest.raises(ValueError, match=field):
+        receipt_signing_input(receipt)
+
+
+@pytest.mark.parametrize("field", ["schema", "entity_id", "event_id", "run_id"])
+def test_f5_a_lone_surrogate_in_any_context_string_is_refused_naming_the_field(field):
+    from delta.signing import receipt_signing_input
+    receipt = _receipt()
+    receipt["context"][field] = chr(0xDC00)
+    with pytest.raises(ValueError, match=f"context.{field}"):
+        receipt_signing_input(receipt)
+
+
+def test_f5_verify_receipt_signature_is_false_for_such_a_receipt():
+    from delta.signing import verify_receipt_signature
+    assert verify_receipt_signature(_receipt(chr(0xD800)), b"sig", lambda d, s: True) is False
+
+
+def test_f5_the_checkpoint_signing_input_refuses_a_non_utf8_head():
+    from delta import LedgerCheckpoint
+    from delta.store import CheckpointStore
+    with pytest.raises(ValueError, match="head"):
+        CheckpointStore._signing_input(LedgerCheckpoint(1, chr(0xD800)))

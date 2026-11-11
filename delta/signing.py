@@ -16,6 +16,17 @@ _RECEIPT_KEYS = frozenset(_STR_FIELDS) | frozenset(_INT_FIELDS) | {"context"}
 _CONTEXT_KEYS = frozenset({"schema", "entity_id", "event_id", "run_id"})
 
 
+def strict_utf8(name: str, value: str) -> None:
+    """``ValueError`` naming ``name`` unless ``value`` encodes as strict UTF-8 (so no lone or paired surrogates).
+
+    ``ensure_ascii`` JSON writes an astral character and the surrogate pair of two code points the same way, so
+    without this two different strings would share one signing input."""
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"{name} does not encode as strict UTF-8 (a surrogate code point is not a character)") from None
+
+
 def receipt_signing_input(receipt: Mapping) -> bytes:
     """The exact bytes a receipt is signed over: the domain tag, then the receipt as canonical ASCII JSON.
 
@@ -34,6 +45,7 @@ def receipt_signing_input(receipt: Mapping) -> bytes:
     for name in _STR_FIELDS:
         if type(receipt[name]) is not str:
             raise TypeError(f"receipt field {name} must be an exact str; got {type(receipt[name]).__name__}")
+        strict_utf8(f"receipt field {name}", receipt[name])
     for name in _INT_FIELDS:
         if type(receipt[name]) is not int:
             raise TypeError(f"receipt field {name} must be an exact int; got {type(receipt[name]).__name__}")
@@ -47,6 +59,7 @@ def receipt_signing_input(receipt: Mapping) -> bytes:
     for key, value in context.items():
         if type(value) is not str:
             raise TypeError(f"receipt field context.{key} must be an exact str; got {type(value).__name__}")
+        strict_utf8(f"receipt field context.{key}", value)
     body = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
     return RECEIPT_SIGNATURE_DOMAIN + body.encode("ascii")
 

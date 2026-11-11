@@ -23,6 +23,7 @@ from .ledger import (
     _entry_from_dict,
     _hash_dict,
 )
+from .signing import strict_utf8
 
 try:  # POSIX only; where it is missing the store takes no cross-process lock (one writer is then purely a convention)
     import fcntl
@@ -360,6 +361,7 @@ class CheckpointStore:
 
     @staticmethod
     def _signing_input(checkpoint: LedgerCheckpoint) -> bytes:
+        strict_utf8("checkpoint head", checkpoint.head)
         return CHECKPOINT_SIGNATURE_DOMAIN + _canonical({"length": checkpoint.length, "head": checkpoint.head}).encode("ascii")
 
     def _parse(self) -> Tuple[LedgerCheckpoint, Optional[bytes]]:
