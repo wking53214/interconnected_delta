@@ -413,10 +413,23 @@ class CheckpointStore:
                 raise StoreError("the checkpoint signature does not verify")
         return checkpoint
 
-    def write(self, checkpoint: LedgerCheckpoint, *, sign: Optional[Callable[[bytes], bytes]] = None) -> None:
+    def write(
+        self,
+        checkpoint: LedgerCheckpoint,
+        *,
+        sign: Optional[Callable[[bytes], bytes]] = None,
+        verify: Optional[Callable[[bytes, bytes], bool]] = None,
+        replace_corrupt: bool = False,
+    ) -> None:
         """Replace the stored checkpoint atomically (temp file in the same directory, fsync, ``os.replace``, fsync of
         the directory). Forward-only: a lower length, or the same length with a different head, is a ``StoreError``;
-        the same value is accepted. A corrupt existing file is also refused rather than overwritten."""
+        the same value is accepted. A corrupt existing file is also refused rather than overwritten.
+
+        ``verify`` (callable(signing_input, signature) -> bool) judges the existing file too: one that does not parse,
+        is unsigned or fails ``verify`` is corrupt, and ``StoreCorruptError`` is raised instead of treating its length as
+        a floor (a planted huge checkpoint would otherwise block every later write). The remedy is an explicit
+        ``replace_corrupt=True``, which replaces a corrupt file without the forward-only comparison; a file that is
+        sound still gates forward-only either way."""
         if not isinstance(checkpoint, LedgerCheckpoint):
             raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
         try:
@@ -443,14 +456,27 @@ class CheckpointStore:
             try:
                 if fcntl is not None:
                     fcntl.flock(lock_fd, fcntl.LOCK_EX)  # held from the forward-only check through the directory fsync
-                self._replace_forward_only(checkpoint, data, directory)
+                self._replace_forward_only(checkpoint, data, directory, verify, replace_corrupt)
             finally:
                 os.close(lock_fd)  # closing releases the flock
 
-    def _replace_forward_only(self, checkpoint: LedgerCheckpoint, data: bytes, directory: str) -> None:
+    def _replace_forward_only(
+        self, checkpoint: LedgerCheckpoint, data: bytes, directory: str,
+        verify: Optional[Callable[[bytes, bytes], bool]], replace_corrupt: bool,
+    ) -> None:
         """The check and the replace; the caller holds the lock."""
+        current = None
         if os.path.exists(self.path):
-            current, _ = self._parse()
+            try:
+                current = self.read(verify=verify) if verify is not None else self._parse()[0]
+            except StoreError as exc:
+                if verify is None and not replace_corrupt:
+                    raise  # unchanged behaviour: a corrupt existing file is refused
+                if not replace_corrupt:
+                    raise StoreCorruptError(
+                        f"the existing checkpoint at {self.path} is corrupt ({exc}); pass replace_corrupt=True to replace it"
+                    ) from exc
+        if current is not None:
             if checkpoint.length < current.length:
                 raise StoreError(f"refused: length {checkpoint.length} is lower than the stored {current.length}")
             if checkpoint.length == current.length and checkpoint.head != current.head:

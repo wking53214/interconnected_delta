@@ -243,3 +243,50 @@ def test_f7_the_lock_is_held_from_the_check_through_the_directory_fsync(tmp_path
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released after the write
     finally:
         os.close(fd)
+
+
+# ---------------------------------------------------------------- F8: an existing checkpoint that fails verify is corrupt, not a floor
+def _signer():
+    import hashlib
+    return (lambda b: hashlib.sha256(b"K" + b).digest(), lambda d, s: s == hashlib.sha256(b"K" + d).digest())
+
+
+def test_f8_a_planted_unsigned_huge_checkpoint_is_corrupt_not_a_floor(tmp_path):
+    import hashlib
+    from delta import LedgerCheckpoint
+    from delta.store import CheckpointStore
+    sign, verify = _signer()
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps({"v": 1, "length": 10**9, "head": hashlib.sha256(b"x").hexdigest()}))
+    store = CheckpointStore(path)
+    real = LedgerCheckpoint(3, hashlib.sha256(b"real").hexdigest())
+    before = path.read_bytes()
+    with pytest.raises(StoreCorruptError):
+        store.write(real, sign=sign, verify=verify)
+    assert path.read_bytes() == before
+    store.write(real, sign=sign, verify=verify, replace_corrupt=True)
+    assert store.read(verify=verify) == real
+
+
+def test_f8_a_bad_signature_on_the_existing_file_is_corrupt(tmp_path):
+    import hashlib
+    from delta import LedgerCheckpoint
+    from delta.store import CheckpointStore
+    sign, verify = _signer()
+    store = CheckpointStore(tmp_path / "checkpoint.json")
+    store.write(LedgerCheckpoint(2, hashlib.sha256(b"h2").hexdigest()), sign=lambda b: b"forged")
+    with pytest.raises(StoreCorruptError):
+        store.write(LedgerCheckpoint(3, hashlib.sha256(b"h3").hexdigest()), sign=sign, verify=verify)
+
+
+def test_f8_a_verified_existing_file_still_gates_forward_only(tmp_path):
+    import hashlib
+    from delta import LedgerCheckpoint
+    from delta.store import CheckpointStore
+    sign, verify = _signer()
+    store = CheckpointStore(tmp_path / "checkpoint.json")
+    store.write(LedgerCheckpoint(5, hashlib.sha256(b"h5").hexdigest()), sign=sign, verify=verify)
+    with pytest.raises(StoreError, match="lower"):
+        store.write(LedgerCheckpoint(4, hashlib.sha256(b"h4").hexdigest()), sign=sign, verify=verify)
+    store.write(LedgerCheckpoint(6, hashlib.sha256(b"h6").hexdigest()), sign=sign, verify=verify)
+    assert store.read(verify=verify).length == 6
