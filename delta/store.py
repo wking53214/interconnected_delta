@@ -412,4 +412,50 @@ class CheckpointStore:
             _fsync_dir(directory)
 
 
-__all__ = ["FileLedgerStore", "CheckpointStore", "StoreError", "StoreCorruptError", "LEDGER_FILE", "CHECKPOINT_SIGNATURE_DOMAIN"]
+def reconcile(
+    store: FileLedgerStore,
+    checkpoint_store: CheckpointStore,
+    *,
+    require_context: bool = False,
+    verify: Optional[Callable[[bytes, bytes], bool]] = None,
+) -> dict:
+    """Compare the loaded file with the separately kept checkpoint. ``{"status": ..., ...}``; never writes or repairs.
+
+    ``OK``: the checkpoint is covered by the loaded ledger and equals its prefix head. ``UNWITNESSED_TAIL``: the same,
+    and ``unwitnessed`` entries follow the checkpoint (nothing independent vouches for them). ``LOST``: the checkpoint
+    is ahead of the file, so entries acknowledged up to it are missing (``missing`` counts them). ``DIVERGED``: the
+    head at the checkpoint's length differs, so the history was rewritten. ``NO_CHECKPOINT``: entries but no checkpoint
+    file. ``EMPTY``: no entries and no checkpoint. Mid-file damage raises ``StoreCorruptError``, a corrupt checkpoint
+    file raises ``StoreError`` (``verify``, when given, is passed to ``CheckpointStore.read``).
+
+    This is only as strong as the checkpoint's independence: a checkpoint the file's writer can also rewrite agrees
+    with whatever it was rewritten to.
+    """
+    ledger, report = store.load(require_context)
+    length = len(ledger)
+    result: dict = {
+        "status": "", "ledger_length": length, "checkpoint_length": None, "unwitnessed": 0,
+        "recovered_tail": report["recovered_tail"],
+    }
+    if not checkpoint_store.exists():
+        result["status"] = "EMPTY" if length == 0 else "NO_CHECKPOINT"
+        return result
+    checkpoint = checkpoint_store.read(verify=verify)
+    result["checkpoint_length"] = checkpoint.length
+    if checkpoint.length > length:
+        result["status"] = "LOST"
+        result["missing"] = checkpoint.length - length
+    elif ledger.entries[checkpoint.length - 1].immutable_hash != checkpoint.head:
+        result["status"] = "DIVERGED"
+    elif checkpoint.length < length:
+        result["status"] = "UNWITNESSED_TAIL"
+        result["unwitnessed"] = length - checkpoint.length
+    else:
+        result["status"] = "OK"
+    return result
+
+
+__all__ = [
+    "FileLedgerStore", "CheckpointStore", "StoreError", "StoreCorruptError", "reconcile",
+    "LEDGER_FILE", "CHECKPOINT_SIGNATURE_DOMAIN",
+]
