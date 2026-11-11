@@ -335,12 +335,19 @@ def verification_receipt(
     consistent receipt. It is only as good as where the checkpoint was kept. The ledger is not handed to CNS.
     """
     gate = _cns_gate()
-    if not isinstance(ledger, DecisionLedger):
-        raise TypeError(f"expected a delta.ledger.DecisionLedger; got {type(ledger).__name__}")
+    # Exactly a DecisionLedger, not a subclass: a subclass can override snapshot() or the properties read below and so
+    # choose what the receipt states (a length of 999 for two entries). The plain class reads its own state.
+    if type(ledger) is not DecisionLedger:
+        raise TypeError(f"expected exactly a delta.ledger.DecisionLedger (a subclass is refused); got {type(ledger).__name__}")
     # One locked snapshot of entries, head and length. Everything below, the verification and every receipt field, is
     # built from it alone, so a list that answers differently on a later read, or an append that lands meanwhile,
     # cannot put a value on the receipt that was not verified.
-    entries, ledger_head, ledger_length = ledger.snapshot()
+    entries, ledger_head, _ = ledger.snapshot()
+    # The length is taken from the tuple itself, so it cannot disagree with the entries that were verified. The head is the
+    # one the ledger actually holds, NOT one derived from the last entry: the chain check below compares the two, and
+    # comparing the entries with a head computed from the entries would let an entry removed without resetting the head
+    # verify.
+    ledger_length = len(entries)
     if not DecisionLedger._verify_snapshot(entries, ledger_head, ledger.require_context):
         raise ValueError("the ledger's chain does not verify, so no receipt is issued")
     if not isinstance(checkpoint, LedgerCheckpoint):

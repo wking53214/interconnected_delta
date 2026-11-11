@@ -122,7 +122,7 @@ class LedgerEntry:
 
 _STR_FIELDS = (
     "entity_id", "decision_id", "decision", "decision_fingerprint", "reasoning", "instructions",
-    "content_fingerprint", "keyset_fingerprint", "confidence_basis",
+    "content_fingerprint", "keyset_fingerprint", "confidence_basis", "audit_hash",
 )
 
 
@@ -338,6 +338,10 @@ class DecisionLedger:
             raise RuntimeError("append from inside a sink is not allowed")
         if type(decision) is not Decision:
             raise TypeError(f"delta records beta.Decision only; got {type(decision).__name__}")
+        # A str is an iterable of str, so the copy below would store it as its characters: refuse it before the copy.
+        for name in _TUPLE_FIELDS:
+            if isinstance(getattr(decision, name), str):
+                raise TypeError(f"Decision.{name} must be a list or tuple of str, not a str")
         # Copy first, reading each caller-supplied iterable exactly once, then judge and record that copy only: an
         # iterable that answers differently on a later read cannot be stored differently from what was validated.
         decision = dataclasses.replace(decision, **{name: tuple(getattr(decision, name)) for name in _TUPLE_FIELDS})
@@ -587,7 +591,9 @@ class DecisionLedger:
         entries can reset the head, or recompute the whole chain, and it still verifies. A checkpoint held
         elsewhere does not move with them. This module cannot say where to keep it: that is the caller's.
         """
-        return LedgerCheckpoint(len(self.entries), self.chain_head)
+        # One locked snapshot (healing a pending commit first), so the length and head are a pair that belongs together.
+        _, head, length = self.snapshot()
+        return LedgerCheckpoint(length, head)
 
     def verify_against(self, checkpoint: LedgerCheckpoint) -> bool:
         """Whether the whole chain verifies AND still contains the history the checkpoint recorded.
@@ -684,7 +690,8 @@ class DecisionLedger:
         return ledger
 
     def __len__(self) -> int:
-        return len(self.entries)
+        # Under the lock and after healing, like snapshot(), so a half-done commit is never counted.
+        return self.snapshot()[2]
 
 
 _CALL_SINK_CODE = DecisionLedger._call_sink.__code__
