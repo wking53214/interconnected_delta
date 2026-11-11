@@ -173,11 +173,13 @@ class FileLedgerStore:
                 if fcntl is not None:
                     fcntl.flock(fd, fcntl.LOCK_EX)
                 size = os.fstat(fd).st_size
-                previous = self._last_entry(fd, size)
+                previous, only_line = self._last_entry(fd, size)
                 if previous is not None and previous["audit_id"] == rendered["audit_id"]:
                     if previous != rendered:
                         raise StoreError(f"audit_id {rendered['audit_id']} is already stored with different content")
                     os.fsync(fd)
+                    if only_line:
+                        _fsync_dir(self.directory)  # the first attempt may be the one whose directory fsync failed
                     return
                 expected = previous["immutable_hash"] if previous is not None else _genesis()
                 if rendered["previous_hash"] != expected:
@@ -213,11 +215,12 @@ class FileLedgerStore:
         return pieces[-count:]
 
     @classmethod
-    def _last_entry(cls, fd: int, size: int) -> Optional[dict]:
+    def _last_entry(cls, fd: int, size: int) -> Tuple[Optional[dict], bool]:
         """The last stored entry, verified the way ``load`` would: parsed by the entry parser, its hash recomputed,
-        and linked to the line before it. Anything else is a ``StoreError``; a file ``load`` would refuse is not built on."""
+        and linked to the line before it. Anything else is a ``StoreError``; a file ``load`` would refuse is not built on.
+        Returns ``(entry, only_line)``; ``only_line`` is true when the file holds exactly that one line."""
         if size == 0:
-            return None
+            return None, False
         if os.pread(fd, 1, size - 1) != b"\n":
             raise StoreError("the file ends in a torn line: run repair() before recording more")
         lines = cls._last_lines(fd, size, 2)
@@ -237,7 +240,7 @@ class FileLedgerStore:
                 f"the last stored lines do not form a verifying chain ({exc}); load() would refuse this file, "
                 "so nothing more is recorded to it"
             ) from exc
-        return entries[-1]
+        return entries[-1], len(entries) == 1
 
     # ------------------------------------------------------------------ reading
     def _scan(self) -> Tuple[List[dict], int, dict]:

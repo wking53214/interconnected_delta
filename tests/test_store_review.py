@@ -59,3 +59,42 @@ def test_f4_an_empty_entry_on_the_final_line_is_a_store_error(tmp_path):
     assert open(store.path, "rb").read() == before
     with pytest.raises(StoreCorruptError):
         store.load(True)
+
+
+# ---------------------------------------------------------------- F2: the retry also syncs the directory
+def test_f2_a_retry_after_a_failed_directory_fsync_is_not_acknowledged_until_the_directory_syncs(tmp_path, monkeypatch):
+    import delta.store as st
+    calls = {"n": 0, "ok": 0}
+    real = st._fsync_dir
+
+    def flaky(directory):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(5, "EIO on directory fsync")
+        calls["ok"] += 1
+        real(directory)
+
+    monkeypatch.setattr(st, "_fsync_dir", flaky)
+    store = FileLedgerStore(tmp_path / "led")
+    ledger = DecisionLedger(require_context=True, sink=store.sink)
+    with pytest.raises(OSError):
+        ledger.append(make_decision(0), context=ctx_n(1))
+    assert len(ledger) == 0
+    ledger.append(make_decision(0), context=ctx_n(1))
+    assert len(ledger) == 1
+    assert calls["ok"] == 1
+
+
+def test_f2_a_retry_whose_directory_fsync_fails_again_is_not_acknowledged(tmp_path, monkeypatch):
+    import delta.store as st
+
+    def always(directory):
+        raise OSError(5, "EIO on directory fsync")
+
+    monkeypatch.setattr(st, "_fsync_dir", always)
+    store = FileLedgerStore(tmp_path / "led")
+    ledger = DecisionLedger(require_context=True, sink=store.sink)
+    for _ in range(2):
+        with pytest.raises(OSError):
+            ledger.append(make_decision(0), context=ctx_n(1))
+    assert len(ledger) == 0
