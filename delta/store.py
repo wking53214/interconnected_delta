@@ -121,6 +121,22 @@ def _fsync_dir(directory: str) -> None:
         os.close(fd)
 
 
+def _make_directory(directory: str) -> None:
+    """``os.makedirs``, then fsync the parent of every directory this call created, so the new names are durable."""
+    directory = os.path.abspath(directory)
+    missing = []
+    probe = directory
+    while not os.path.isdir(probe):
+        missing.append(probe)
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    os.makedirs(directory, exist_ok=True)
+    for created in reversed(missing):
+        _fsync_dir(os.path.dirname(created))
+
+
 def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
@@ -166,7 +182,7 @@ class FileLedgerStore:
         """
         line, rendered = _render_line(entry)
         with self._lock:
-            os.makedirs(self.directory, exist_ok=True)
+            _make_directory(self.directory)
             created = not os.path.exists(self.path)
             fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
             try:
@@ -420,7 +436,7 @@ class CheckpointStore:
         data = (_canonical(body) + "\n").encode("ascii")
         directory = os.path.dirname(os.path.abspath(self.path))
         with self._lock:
-            os.makedirs(directory, exist_ok=True)
+            _make_directory(directory)
             if os.path.exists(self.path):
                 current, _ = self._parse()
                 if checkpoint.length < current.length:

@@ -392,7 +392,7 @@ def test_fsync_is_called_for_the_file_and_the_directory_on_creation(tmp_path, mo
     store = FileLedgerStore(tmp_path / "led")
     ledger = DecisionLedger(require_context=True, sink=store.sink)
     ledger.append(make_decision(0), context=ctx_n(1))
-    assert kinds == ["file", "dir"]
+    assert kinds == ["dir", "file", "dir"]  # F10: the parent of the directory the store created is synced first
     kinds.clear()
     ledger.append(make_decision(1), context=ctx_n(2))
     assert kinds == ["file"]

@@ -98,3 +98,29 @@ def test_f2_a_retry_whose_directory_fsync_fails_again_is_not_acknowledged(tmp_pa
         with pytest.raises(OSError):
             ledger.append(make_decision(0), context=ctx_n(1))
     assert len(ledger) == 0
+
+
+# ---------------------------------------------------------------- F10: a directory the store creates is made durable in its parent
+def test_f10_creating_the_ledger_directory_fsyncs_its_parent(tmp_path, monkeypatch):
+    import delta.store as st
+    synced = []
+    real = st._fsync_dir
+    monkeypatch.setattr(st, "_fsync_dir", lambda d: (synced.append(os.path.abspath(d)), real(d))[1])
+    store = FileLedgerStore(tmp_path / "a" / "led")
+    DecisionLedger(require_context=True, sink=store.sink).append(make_decision(0), context=ctx_n(1))
+    assert str(tmp_path) in synced  # the parent of the first created level
+    assert str(tmp_path / "a") in synced  # the parent of the ledger directory
+    assert str(tmp_path / "a" / "led") in synced
+
+
+def test_f10_creating_the_checkpoint_directory_fsyncs_its_parent(tmp_path, monkeypatch):
+    import delta.store as st
+    from delta import LedgerCheckpoint
+    synced = []
+    real = st._fsync_dir
+    monkeypatch.setattr(st, "_fsync_dir", lambda d: (synced.append(os.path.abspath(d)), real(d))[1])
+    cp = st.CheckpointStore(tmp_path / "a" / "cp" / "checkpoint.json")
+    cp.write(LedgerCheckpoint(1, "0" * 64))
+    assert str(tmp_path) in synced
+    assert str(tmp_path / "a") in synced
+    assert str(tmp_path / "a" / "cp") in synced
