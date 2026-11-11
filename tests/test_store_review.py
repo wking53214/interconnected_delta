@@ -423,3 +423,59 @@ def test_f1_reconcile_does_not_report_ok_for_an_edited_audit_hash(tmp_path):
         reconcile(store, cps, require_context=True)
     _edit_audit_hash(store, 1, "forged", rechain=True)  # an attacker who also re-chains is caught by the checkpoint
     assert reconcile(store, cps, require_context=True)["status"] == "DIVERGED"
+
+
+# ---------------------------------------------------------------- F9 and F11: what the README now says, held by tests
+def test_f9_the_phantom_retry_is_idempotent_only_for_the_same_entry_timestamp(tmp_path):
+    from datetime import datetime
+    store = FileLedgerStore(tmp_path)
+    ledger = DecisionLedger(require_context=True, sink=store.sink)
+    ledger.append(make_decision(0), context=ctx_n(1))
+
+    class Boom(Exception):
+        pass
+
+    real = ledger._sink
+
+    def sink_then_fail(entry):
+        real(entry)
+        raise Boom()
+
+    ledger._sink = sink_then_fail
+    with pytest.raises(Boom):
+        ledger.append(make_decision(1), datetime(2026, 1, 1, 12, 0, 1), context=ctx_n(2))
+    ledger._sink = real
+    ledger.append(make_decision(1), datetime(2026, 1, 1, 12, 0, 1), context=ctx_n(2))  # same timestamp: one line
+    assert len(store.load(True)[0]) == 2
+    ledger3, _ = store.load(True, attach=True)
+    ledger3._sink = sink_then_fail
+    with pytest.raises(Boom):
+        ledger3.append(make_decision(2), datetime(2026, 1, 1, 12, 0, 2), context=ctx_n(3))
+    ledger3._sink = real
+    with pytest.raises(StoreError):  # a fresh timestamp is a different entry
+        ledger3.append(make_decision(2), datetime(2026, 1, 1, 12, 0, 3), context=ctx_n(3))
+
+
+def test_f11_an_old_signed_checkpoint_replayed_after_a_tail_rewrite_reads_unwitnessed_tail(tmp_path):
+    import hashlib
+    from delta.store import CheckpointStore, reconcile
+    sign = lambda b: hashlib.sha256(b"K" + b).digest()  # noqa: E731
+    verify = lambda d, s: s == hashlib.sha256(b"K" + d).digest()  # noqa: E731
+    store = FileLedgerStore(tmp_path / "led")
+    ledger = fill(store, 2)
+    cps = CheckpointStore(tmp_path / "cp.json")
+    cps.write(ledger.checkpoint(), sign=sign)
+    old = open(cps.path, "rb").read()
+    for i in range(2, 5):
+        ledger.append(make_decision(i), context=ctx_n(i + 1))
+    cps.write(ledger.checkpoint(), sign=sign)
+    os.remove(store.path)
+    fork = DecisionLedger(require_context=True, sink=FileLedgerStore(tmp_path / "led").sink)
+    for i in range(2):
+        fork.append(make_decision(i), context=ctx_n(i + 1))
+    for i in range(2, 5):
+        fork.append(make_decision(100 + i), context=ctx_n(100 + i))
+    with open(cps.path, "wb") as fh:
+        fh.write(old)
+    result = reconcile(store, cps, require_context=True, verify=verify)
+    assert result["status"] == "UNWITNESSED_TAIL" and result["unwitnessed"] == 3  # no freshness: not detected

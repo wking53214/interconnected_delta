@@ -349,7 +349,7 @@ class CheckpointStore:
     independent: whoever can rewrite one can rewrite the other, and ``reconcile`` will then agree with the rewrite.
     ``write`` replaces the file atomically and only moves forward; with a ``sign`` callable it stores a signature
     over the domain tag and the canonical ``{"length", "head"}``. delta holds no key: ``sign`` and ``verify`` are the
-    deployer's. One writer per file is assumed.
+    deployer's. Concurrent writers are serialised by an exclusive flock on a lock file beside the checkpoint (POSIX; see the README).
     """
 
     def __init__(self, path: Any) -> None:
