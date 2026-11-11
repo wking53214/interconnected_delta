@@ -77,7 +77,7 @@ from typing import Any, Dict, Optional
 from beta import Decision
 
 from .context import check_context, check_digest
-from .ledger import _GENESIS_SEED, DecisionLedger, LedgerCheckpoint, LedgerEntry, _canonical_subset, _hash_dict
+from .ledger import DecisionLedger, LedgerCheckpoint, LedgerEntry, _canonical_subset, _hash_dict
 from .obligation import OutcomeObligation
 
 __all__ = [
@@ -342,11 +342,12 @@ def verification_receipt(
     # One locked snapshot of entries, head and length. Everything below, the verification and every receipt field, is
     # built from it alone, so a list that answers differently on a later read, or an append that lands meanwhile,
     # cannot put a value on the receipt that was not verified.
-    entries, _, _ = ledger.snapshot()
-    # Length and head are derived from the tuple itself, not taken from the snapshot's other two elements. The chain
-    # check below proves the last entry's hash is the head the ledger holds, so the two cannot differ on a verified chain.
+    entries, ledger_head, _ = ledger.snapshot()
+    # The length is taken from the tuple itself, so it cannot disagree with the entries that were verified. The head is the
+    # one the ledger actually holds, NOT one derived from the last entry: the chain check below compares the two, and
+    # comparing the entries with a head computed from the entries would let an entry removed without resetting the head
+    # verify.
     ledger_length = len(entries)
-    ledger_head = entries[-1].immutable_hash if entries else hashlib.sha256(_GENESIS_SEED).hexdigest()
     if not DecisionLedger._verify_snapshot(entries, ledger_head, ledger.require_context):
         raise ValueError("the ledger's chain does not verify, so no receipt is issued")
     if not isinstance(checkpoint, LedgerCheckpoint):

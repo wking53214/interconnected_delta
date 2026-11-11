@@ -198,3 +198,19 @@ def test_replay_identity_is_entity_fingerprint_and_time_only():
     assert len(ledger) == 1
     ledger.append(H.decision(0, timestamp=H.T0.replace(hour=13)), context=H.ctx_n(9))  # another time: a new Decision
     assert len(ledger) == 2
+
+
+# --- Regression of Intervention 2 (found by the CNS runner scenario "a ledger rolled back without resetting its head") --
+# N9 first derived the receipt's head from the last entry of the snapshot, so the chain check compared the entries with a
+# head computed from the entries themselves and an entry removed without resetting chain_head verified. The head the
+# ledger holds must be the one checked.
+
+def test_a_receipt_is_refused_when_an_entry_was_removed_and_the_head_was_not_reset_even_for_a_prefix_checkpoint():
+    from delta.cns_connector import verification_receipt
+
+    ledger = H.recorded(3)
+    older_prefix = LedgerCheckpoint(2, ledger.entries[1].immutable_hash)  # honest checkpoint of the first two entries
+    ledger.entries.pop()  # the last entry is gone; chain_head still names it
+    assert ledger.chain_head != ledger.entries[-1].immutable_hash
+    with pytest.raises(ValueError, match="chain does not verify"):
+        verification_receipt(ledger, older_prefix, context=H.ctx_n(1), decision_digest=H.DD, index=0)
