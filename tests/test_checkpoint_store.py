@@ -64,7 +64,7 @@ def test_a_crash_between_the_temp_write_and_the_replace_leaves_the_old_checkpoin
         store.write(cp_at(4))
     monkeypatch.undo()
     assert open(store.path, "rb").read() == before and store.read() == cp_at(2)
-    assert os.listdir(tmp_path) == ["checkpoint.json"]  # the temp file is not left behind
+    assert sorted(os.listdir(tmp_path)) == ["checkpoint.json", "checkpoint.json.lock"]  # F7: the lock file; no temp file left behind
 
 
 def test_the_write_fsyncs_the_temp_file_and_then_the_directory(tmp_path, monkeypatch):

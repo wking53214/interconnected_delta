@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 LEDGER_FILE = "ledger.jsonl"
+LOCK_SUFFIX = ".lock"
 LINE_VERSION = 1
 CHECKPOINT_SIGNATURE_DOMAIN = b"delta-ledger-checkpoint-signature/1\n"
 _LINE_KEYS = frozenset({"v", "entry", "sum"})
@@ -438,27 +439,37 @@ class CheckpointStore:
         directory = os.path.dirname(os.path.abspath(self.path))
         with self._lock:
             _make_directory(directory)
-            if os.path.exists(self.path):
-                current, _ = self._parse()
-                if checkpoint.length < current.length:
-                    raise StoreError(f"refused: length {checkpoint.length} is lower than the stored {current.length}")
-                if checkpoint.length == current.length and checkpoint.head != current.head:
-                    raise StoreError(f"refused: length {checkpoint.length} is stored with a different head")
-            fd, temp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(self.path) + ".", suffix=".tmp")  # O_EXCL, 0600
+            lock_fd = os.open(self.path + LOCK_SUFFIX, os.O_RDWR | os.O_CREAT, 0o600)
             try:
-                try:
-                    _write_all(fd, data)
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                os.replace(temp, self.path)
-            except BaseException:
-                try:
-                    os.unlink(temp)
-                except OSError:
-                    pass
-                raise
-            _fsync_dir(directory)
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)  # held from the forward-only check through the directory fsync
+                self._replace_forward_only(checkpoint, data, directory)
+            finally:
+                os.close(lock_fd)  # closing releases the flock
+
+    def _replace_forward_only(self, checkpoint: LedgerCheckpoint, data: bytes, directory: str) -> None:
+        """The check and the replace; the caller holds the lock."""
+        if os.path.exists(self.path):
+            current, _ = self._parse()
+            if checkpoint.length < current.length:
+                raise StoreError(f"refused: length {checkpoint.length} is lower than the stored {current.length}")
+            if checkpoint.length == current.length and checkpoint.head != current.head:
+                raise StoreError(f"refused: length {checkpoint.length} is stored with a different head")
+        fd, temp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(self.path) + ".", suffix=".tmp")  # O_EXCL, 0600
+        try:
+            try:
+                _write_all(fd, data)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(temp, self.path)
+        except BaseException:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+            raise
+        _fsync_dir(directory)
 
 
 def reconcile(

@@ -155,4 +155,91 @@ def test_f6_the_temp_file_comes_from_mkstemp_in_the_same_directory(tmp_path, mon
     store = CheckpointStore(tmp_path / "sub" / "checkpoint.json")
     store.write(LedgerCheckpoint(1, hashlib.sha256(b"a").hexdigest()))
     assert seen == [str(tmp_path / "sub")]
-    assert sorted(os.listdir(tmp_path / "sub")) == ["checkpoint.json"]
+    assert sorted(os.listdir(tmp_path / "sub")) == ["checkpoint.json", "checkpoint.json.lock"]  # no temp file is left
+
+
+# ---------------------------------------------------------------- F7: forward-only holds across store objects
+def test_f7_two_store_objects_cannot_move_the_checkpoint_backwards(tmp_path, monkeypatch):
+    import hashlib
+    import threading
+    import time
+    import delta.store as st
+    from delta import LedgerCheckpoint
+    H = lambda c: hashlib.sha256(c.encode()).hexdigest()  # noqa: E731
+    path = tmp_path / "checkpoint.json"
+    a, b = st.CheckpointStore(path), st.CheckpointStore(path)
+    a.write(LedgerCheckpoint(5, H("h5")))
+    real = st._write_all
+    errors = []
+    threads = []
+
+    def run_b():
+        try:
+            b.write(LedgerCheckpoint(10, H("h10")))
+        except Exception as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    def interleave(fd, data):
+        monkeypatch.setattr(st, "_write_all", real)
+        if b'"length":6' in data:  # a is between its forward-only check and its replace
+            thread = threading.Thread(target=run_b)
+            threads.append(thread)
+            thread.start()
+            time.sleep(0.3)  # b gets to run now unless a holds the lock
+        real(fd, data)
+
+    monkeypatch.setattr(st, "_write_all", interleave)
+    a.write(LedgerCheckpoint(6, H("h6")))
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert a.read().length == 10
+
+
+def test_f7_a_lower_write_from_a_second_object_is_refused(tmp_path):
+    import hashlib
+    from delta import LedgerCheckpoint
+    path = tmp_path / "checkpoint.json"
+    a, b = st_checkpoint(path), st_checkpoint(path)
+    b.write(LedgerCheckpoint(10, hashlib.sha256(b"h10").hexdigest()))
+    with pytest.raises(StoreError, match="lower"):
+        a.write(LedgerCheckpoint(6, hashlib.sha256(b"h6").hexdigest()))
+    assert a.read().length == 10
+
+
+def st_checkpoint(path):
+    from delta.store import CheckpointStore
+    return CheckpointStore(path)
+
+
+def test_f7_the_lock_is_held_from_the_check_through_the_directory_fsync(tmp_path, monkeypatch):
+    import fcntl
+    import hashlib
+    import delta.store as st
+    from delta import LedgerCheckpoint
+    path = tmp_path / "checkpoint.json"
+    store = st.CheckpointStore(path)
+    store.write(LedgerCheckpoint(1, hashlib.sha256(b"h1").hexdigest()))
+    states = []
+    real = st._fsync_dir
+
+    def probe(directory):
+        fd = os.open(str(path) + ".lock", os.O_RDWR)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                states.append("free")
+            except BlockingIOError:
+                states.append("held")
+        finally:
+            os.close(fd)
+        real(directory)
+
+    monkeypatch.setattr(st, "_fsync_dir", probe)
+    store.write(LedgerCheckpoint(2, hashlib.sha256(b"h2").hexdigest()))
+    assert states == ["held"]
+    fd = os.open(str(path) + ".lock", os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released after the write
+    finally:
+        os.close(fd)
