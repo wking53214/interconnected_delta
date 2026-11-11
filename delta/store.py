@@ -18,7 +18,9 @@ from .ledger import (
     LedgerCheckpoint,
     LedgerEntry,
     _decision_to_dict,
+    _canonical_subset,
     _entry_from_dict,
+    _hash_dict,
 )
 
 try:  # POSIX only; where it is missing the store takes no cross-process lock (one writer is then purely a convention)
@@ -130,6 +132,17 @@ def _genesis() -> str:
     return hashlib.sha256(_GENESIS_SEED).hexdigest()
 
 
+def _verify_stored_hash(raw: dict) -> None:
+    """``ValueError`` unless ``raw`` parses as an entry and its ``immutable_hash`` is what its content hashes to."""
+    entry = _entry_from_dict(0, raw, False)
+    computed = hashlib.sha256(
+        (entry.previous_hash + _hash_dict(_canonical_subset(
+            entry.audit_id, entry.timestamp, entry.decision, entry.run_id, entry.event_id))).encode()
+    ).hexdigest()
+    if computed != entry.immutable_hash:
+        raise ValueError("immutable_hash does not match the entry's content")
+
+
 class FileLedgerStore:
     """``ledger.jsonl`` in ``directory``: one line per entry, ``{"v": 1, "entry": ..., "sum": ...}``.
 
@@ -187,27 +200,44 @@ class FileLedgerStore:
                 os.close(fd)
 
     @staticmethod
-    def _last_entry(fd: int, size: int) -> Optional[dict]:
+    def _last_lines(fd: int, size: int, count: int) -> List[bytes]:
+        """The last ``count`` complete lines of the file (fewer when it has fewer), oldest first."""
+        pos, buf = size - 1, b""  # size - 1 is the final newline, already checked
+        while buf.count(b"\n") < count and pos > 0:
+            start = max(0, pos - 8192)
+            buf = os.pread(fd, pos - start, start) + buf
+            pos = start
+        pieces = buf.split(b"\n")
+        if pos > 0:
+            pieces = pieces[1:]  # the first piece is the end of a line that starts earlier
+        return pieces[-count:]
+
+    @classmethod
+    def _last_entry(cls, fd: int, size: int) -> Optional[dict]:
+        """The last stored entry, verified the way ``load`` would: parsed by the entry parser, its hash recomputed,
+        and linked to the line before it. Anything else is a ``StoreError``; a file ``load`` would refuse is not built on."""
         if size == 0:
             return None
         if os.pread(fd, 1, size - 1) != b"\n":
             raise StoreError("the file ends in a torn line: run repair() before recording more")
-        pos, tail = size - 1, b""
-        while True:
-            start = max(0, pos - 8192)
-            chunk = os.pread(fd, pos - start, start)
-            idx = chunk.rfind(b"\n")
-            if idx >= 0:
-                tail = chunk[idx + 1:] + tail
-                break
-            tail = chunk + tail
-            pos = start
-            if start == 0:
-                break
+        lines = cls._last_lines(fd, size, 2)
         try:
-            return _check_line(tail)
+            entries = [_check_line(raw) for raw in lines]
         except ValueError as exc:
             raise StoreError(f"the last stored line is damaged ({exc}): run repair() before recording more") from exc
+        expected = entries[0].get("immutable_hash") if len(entries) == 2 else _genesis()
+        try:
+            if len(entries) == 2:
+                _verify_stored_hash(entries[0])
+            _verify_stored_hash(entries[-1])
+            if entries[-1]["previous_hash"] != expected:
+                raise ValueError("previous_hash does not continue the chain")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise StoreError(
+                f"the last stored lines do not form a verifying chain ({exc}); load() would refuse this file, "
+                "so nothing more is recorded to it"
+            ) from exc
+        return entries[-1]
 
     # ------------------------------------------------------------------ reading
     def _scan(self) -> Tuple[List[dict], int, dict]:
