@@ -36,6 +36,7 @@ from .ledger import (
     LedgerCorruptError,
     LedgerEntry,
     StaleDecisionError,
+    verify_export,
 )
 from .obligation import (
     ABANDONED_REASONS,
@@ -85,6 +86,7 @@ __all__ = [
     "StaleDecisionError",
     "LedgerCheckpoint",
     "LedgerEntry",
+    "verify_export",
     "MaturationRule",
     "OutcomeObligation",
     "OutcomeIntegrityError",
