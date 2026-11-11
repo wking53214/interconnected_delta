@@ -77,7 +77,7 @@ from typing import Any, Dict, Optional
 from beta import Decision
 
 from .context import check_context, check_digest
-from .ledger import DecisionLedger, LedgerCheckpoint, LedgerEntry, _canonical_subset, _hash_dict
+from .ledger import _GENESIS_SEED, DecisionLedger, LedgerCheckpoint, LedgerEntry, _canonical_subset, _hash_dict
 from .obligation import OutcomeObligation
 
 __all__ = [
@@ -335,12 +335,18 @@ def verification_receipt(
     consistent receipt. It is only as good as where the checkpoint was kept. The ledger is not handed to CNS.
     """
     gate = _cns_gate()
-    if not isinstance(ledger, DecisionLedger):
-        raise TypeError(f"expected a delta.ledger.DecisionLedger; got {type(ledger).__name__}")
+    # Exactly a DecisionLedger, not a subclass: a subclass can override snapshot() or the properties read below and so
+    # choose what the receipt states (a length of 999 for two entries). The plain class reads its own state.
+    if type(ledger) is not DecisionLedger:
+        raise TypeError(f"expected exactly a delta.ledger.DecisionLedger (a subclass is refused); got {type(ledger).__name__}")
     # One locked snapshot of entries, head and length. Everything below, the verification and every receipt field, is
     # built from it alone, so a list that answers differently on a later read, or an append that lands meanwhile,
     # cannot put a value on the receipt that was not verified.
-    entries, ledger_head, ledger_length = ledger.snapshot()
+    entries, _, _ = ledger.snapshot()
+    # Length and head are derived from the tuple itself, not taken from the snapshot's other two elements. The chain
+    # check below proves the last entry's hash is the head the ledger holds, so the two cannot differ on a verified chain.
+    ledger_length = len(entries)
+    ledger_head = entries[-1].immutable_hash if entries else hashlib.sha256(_GENESIS_SEED).hexdigest()
     if not DecisionLedger._verify_snapshot(entries, ledger_head, ledger.require_context):
         raise ValueError("the ledger's chain does not verify, so no receipt is issued")
     if not isinstance(checkpoint, LedgerCheckpoint):

@@ -12,6 +12,7 @@ import pytest
 
 import test_ledger_r8 as H
 from delta import DecisionLedger
+from delta.ledger import LedgerCheckpoint
 
 
 # --- Intervention 1 (N3): checkpoint() and len() heal first -----------------------------------------------------------
@@ -96,3 +97,31 @@ def test_n3_a_checkpoint_taken_while_a_commit_is_in_progress_waits_for_it():
     assert (cp.length, got["n"]) == (2, 2)
     assert cp.head == ledger.entries[1].immutable_hash
     assert ledger.verify_against(cp)
+
+
+# --- Intervention 2 (N9): a receipt is built from the entries tuple, never from what a subclass reports ---------------
+
+def test_n9_a_ledger_subclass_that_reports_a_false_length_gets_no_receipt():
+    from delta.cns_connector import verification_receipt
+
+    class Liar(DecisionLedger):
+        def snapshot(self):
+            entries, head, _ = super().snapshot()
+            return entries, head, 999
+
+    ledger = Liar(require_context=True)
+    for i in range(2):
+        ledger.append(H.decision(i), context=H.ctx_n(i + 1))
+    cp = LedgerCheckpoint(2, ledger.chain_head)  # honest; checkpoint() itself would repeat the subclass's length
+    with pytest.raises(TypeError, match="DecisionLedger"):
+        verification_receipt(ledger, cp, context=H.ctx_n(1), decision_digest=H.DD, index=0)
+
+
+def test_n9_the_receipt_states_the_length_and_head_of_the_entries_it_verified():
+    from delta.cns_connector import verification_receipt
+
+    ledger = H.recorded(2)
+    cp = ledger.checkpoint()
+    receipt = verification_receipt(ledger, cp, context=H.ctx_n(1), decision_digest=H.DD, index=0)
+    assert receipt["ledger_length"] == 2
+    assert receipt["ledger_head"] == ledger.entries[-1].immutable_hash
