@@ -28,6 +28,8 @@ Three pieces, two different kinds of provenance:
 See each module's docstring for exactly what's extracted vs. new.
 """
 
+from .store import CheckpointStore, FileLedgerStore, StoreCorruptError, StoreError, reconcile
+from .signing import receipt_signing_input, sign_receipt, verify_receipt_signature
 from .ledger import (
     ContextRequiredError,
     DecisionLedger,
@@ -87,6 +89,14 @@ __all__ = [
     "LedgerCheckpoint",
     "LedgerEntry",
     "verify_export",
+    "FileLedgerStore",
+    "CheckpointStore",
+    "reconcile",
+    "StoreError",
+    "StoreCorruptError",
+    "receipt_signing_input",
+    "sign_receipt",
+    "verify_receipt_signature",
     "MaturationRule",
     "OutcomeObligation",
     "OutcomeIntegrityError",

@@ -6,11 +6,12 @@ requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
     "zeta @ git+https://github.com/wking53214/interconnected_zeta@f778be1f5ac27372df8ce61dbe0a8c42f9dc8c3b",
-    "beta @ git+https://github.com/wking53214/interconnected_beta@3b0d46c6b4d3fbdc18ba26154d49a984a9b9c12d",
+    "beta @ git+https://github.com/wking53214/interconnected_beta@06001dfee40afcd8688688ffbab2a09a7dce721a",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+# cryptography is used only by the tests (Ed25519 signing fixtures); the package itself imports nothing outside the standard library.
+dev = ["pytest>=7.0", "cryptography>=42"]
 # Optional: lets a LedgerEntry or OutcomeObligation be bound to a CNS verdict (delta.cns_connector). Nothing in delta imports CNS otherwise.
 cns = ["cns @ git+https://github.com/wking53214/CNS.git@v3.0.0"]
 
