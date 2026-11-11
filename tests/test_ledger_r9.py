@@ -179,3 +179,22 @@ def test_a_list_or_tuple_of_str_is_still_accepted_for_a_tuple_field(name, good):
     ledger = DecisionLedger()
     entry = ledger.append(_with_field(name, good))
     assert getattr(entry.decision, name) == ("a", "b")
+
+
+# --- Intervention 5: the README's replay rule, pinned (README-only change; these passed before it) ----------------------
+
+def test_replay_identity_is_entity_fingerprint_and_time_only():
+    from beta import content_fingerprint
+
+    def edited(**over):
+        d = H.decision(0, **over)
+        return dataclasses.replace(d, content_fingerprint=content_fingerprint(d))
+
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(H.decision(0), context=H.ctx_n(1))
+    for n, over in enumerate([{"instructions": "Send home."}, {"reasoning": "other"}, {"confidence": 0.5}], start=2):
+        with pytest.raises(Exception, match="replay"):
+            ledger.append(edited(**over), context=H.ctx_n(n))
+    assert len(ledger) == 1
+    ledger.append(H.decision(0, timestamp=H.T0.replace(hour=13)), context=H.ctx_n(9))  # another time: a new Decision
+    assert len(ledger) == 2
