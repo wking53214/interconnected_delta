@@ -9,12 +9,13 @@ import hashlib
 import json
 import os
 import threading
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from .ledger import (
     _GENESIS_SEED,
     EXPORT_SCHEMA,
     DecisionLedger,
+    LedgerCheckpoint,
     LedgerEntry,
     _decision_to_dict,
     _entry_from_dict,
@@ -27,6 +28,7 @@ except ImportError:  # pragma: no cover
 
 LEDGER_FILE = "ledger.jsonl"
 LINE_VERSION = 1
+CHECKPOINT_SIGNATURE_DOMAIN = b"delta-ledger-checkpoint-signature/1\n"
 _LINE_KEYS = frozenset({"v", "entry", "sum"})
 
 
@@ -288,4 +290,126 @@ class FileLedgerStore:
         return report
 
 
-__all__ = ["FileLedgerStore", "StoreError", "StoreCorruptError", "LEDGER_FILE"]
+class CheckpointStore:
+    """One checkpoint in one file, meant to live on storage the ledger's writer cannot rewrite.
+
+    Independence is the deployer's responsibility. A checkpoint kept beside the ledger file it protects is not
+    independent: whoever can rewrite one can rewrite the other, and ``reconcile`` will then agree with the rewrite.
+    ``write`` replaces the file atomically and only moves forward; with a ``sign`` callable it stores a signature
+    over the domain tag and the canonical ``{"length", "head"}``. delta holds no key: ``sign`` and ``verify`` are the
+    deployer's. One writer per file is assumed.
+    """
+
+    def __init__(self, path: Any) -> None:
+        self.path = os.fspath(path)
+        self._lock = threading.Lock()
+
+    def exists(self) -> bool:
+        return os.path.exists(self.path)
+
+    @staticmethod
+    def _signing_input(checkpoint: LedgerCheckpoint) -> bytes:
+        return CHECKPOINT_SIGNATURE_DOMAIN + _canonical({"length": checkpoint.length, "head": checkpoint.head}).encode("ascii")
+
+    def _parse(self) -> Tuple[LedgerCheckpoint, Optional[bytes]]:
+        try:
+            with open(self.path, "rb") as fh:
+                raw = fh.read()
+        except FileNotFoundError:
+            raise StoreError(f"no checkpoint at {self.path}") from None
+        try:
+            obj = _loads(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise StoreError(f"the checkpoint file is not valid JSON: {exc}") from exc
+        if type(obj) is not dict or set(obj) not in ({"v", "length", "head"}, {"v", "length", "head", "signature"}):
+            raise StoreError("the checkpoint file must be an object with the keys v, length, head and optionally signature")
+        if type(obj["v"]) is not int or obj["v"] != LINE_VERSION:
+            raise StoreError(f"unknown checkpoint version {obj['v']!r}")
+        try:
+            checkpoint = LedgerCheckpoint.from_dict({"length": obj["length"], "head": obj["head"]})
+        except ValueError as exc:
+            raise StoreError(f"the checkpoint file is mistyped: {exc}") from exc
+        if checkpoint.length < 1:
+            raise StoreError("the checkpoint file names no entry (length 0)")
+        signature = None
+        if "signature" in obj:
+            text = obj["signature"]
+            try:
+                if type(text) is not str or not text:
+                    raise ValueError
+                signature = bytes.fromhex(text)
+            except ValueError:
+                raise StoreError("the checkpoint signature must be a non-empty hex string") from None
+        return checkpoint, signature
+
+    def read(self, *, verify: Optional[Callable[[bytes, bytes], bool]] = None) -> LedgerCheckpoint:
+        """The stored checkpoint, typed. Any corruption, wrong type or extra key is a ``StoreError``.
+
+        With ``verify`` (callable(signing_input, signature) -> bool) a missing signature, a verifier that raises, or an
+        answer other than exactly ``True`` is a ``StoreError`` naming the signature.
+        """
+        checkpoint, signature = self._parse()
+        if verify is not None:
+            if not callable(verify):
+                raise TypeError(f"verify must be callable; got {type(verify).__name__}")
+            if signature is None:
+                raise StoreError("the checkpoint is not signed but a signature check was asked for")
+            try:
+                ok = verify(self._signing_input(checkpoint), signature) is True
+            except Exception:
+                ok = False
+            if not ok:
+                raise StoreError("the checkpoint signature does not verify")
+        return checkpoint
+
+    def write(self, checkpoint: LedgerCheckpoint, *, sign: Optional[Callable[[bytes], bytes]] = None) -> None:
+        """Replace the stored checkpoint atomically (temp file in the same directory, fsync, ``os.replace``, fsync of
+        the directory). Forward-only: a lower length, or the same length with a different head, is a ``StoreError``;
+        the same value is accepted. A corrupt existing file is also refused rather than overwritten."""
+        if not isinstance(checkpoint, LedgerCheckpoint):
+            raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
+        try:
+            checkpoint = LedgerCheckpoint.from_dict(checkpoint.to_dict())
+        except ValueError as exc:
+            raise StoreError(f"this checkpoint cannot be stored: {exc}") from exc
+        if checkpoint.length < 1:
+            raise StoreError("a checkpoint of an empty ledger names no entry and proves nothing; it is not stored")
+        body = {"v": LINE_VERSION, "length": checkpoint.length, "head": checkpoint.head}
+        if sign is not None:
+            if not callable(sign):
+                raise TypeError(f"sign must be callable; got {type(sign).__name__}")
+            signature: Any = sign(self._signing_input(checkpoint))
+            if type(signature) is not bytes:
+                raise TypeError(f"the signer must return exactly bytes; got {type(signature).__name__}")
+            if not signature:
+                raise ValueError("the signer returned an empty signature")
+            body["signature"] = signature.hex()
+        data = (_canonical(body) + "\n").encode("ascii")
+        directory = os.path.dirname(os.path.abspath(self.path))
+        with self._lock:
+            os.makedirs(directory, exist_ok=True)
+            if os.path.exists(self.path):
+                current, _ = self._parse()
+                if checkpoint.length < current.length:
+                    raise StoreError(f"refused: length {checkpoint.length} is lower than the stored {current.length}")
+                if checkpoint.length == current.length and checkpoint.head != current.head:
+                    raise StoreError(f"refused: length {checkpoint.length} is stored with a different head")
+            temp = f"{self.path}.tmp-{os.getpid()}-{threading.get_ident()}"
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            try:
+                try:
+                    _write_all(fd, data)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                os.replace(temp, self.path)
+            except BaseException:
+                try:
+                    os.unlink(temp)
+                except OSError:
+                    pass
+                raise
+            _fsync_dir(directory)
+
+
+__all__ = ["FileLedgerStore", "CheckpointStore", "StoreError", "StoreCorruptError", "LEDGER_FILE", "CHECKPOINT_SIGNATURE_DOMAIN"]
