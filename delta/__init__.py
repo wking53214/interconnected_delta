@@ -28,6 +28,7 @@ Three pieces, two different kinds of provenance:
 See each module's docstring for exactly what's extracted vs. new.
 """
 
+from .store import FileLedgerStore, StoreCorruptError, StoreError
 from .signing import receipt_signing_input, sign_receipt, verify_receipt_signature
 from .ledger import (
     ContextRequiredError,
@@ -88,6 +89,9 @@ __all__ = [
     "LedgerCheckpoint",
     "LedgerEntry",
     "verify_export",
+    "FileLedgerStore",
+    "StoreError",
+    "StoreCorruptError",
     "receipt_signing_input",
     "sign_receipt",
     "verify_receipt_signature",
