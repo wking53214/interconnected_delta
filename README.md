@@ -83,7 +83,7 @@ These are three different properties and delta gives only the first, and only co
 
 - **Integrity** (tamper evidence): the chain detects edits, truncation and reordering **given a checkpoint that was taken earlier and is held outside the process and outside the reach of whoever can edit the ledger**. Without one, whoever can edit the entries can reset the head or recompute the chain and it verifies.
 - **Availability** (the ledger can still be written after a fault): an exception, including a `KeyboardInterrupt` at any line, inside `append` or inside the sink leaves the ledger writable and consistent (head, entries and the sink guard agree; a commit cut short is undone before the next call). A head that disagrees with its last entry still stops all recording (`LedgerCorruptError`); there is no repair path.
-- **Durability** (survives a restart): **not provided.** The ledger is in memory. A restart loses it, and a freshly created ledger verifies cleanly, accepts the same event again, and fails `verify_against` only for a caller that kept a non-empty checkpoint taken before the restart (tested). A file store and checkpoint custody are **not implemented here**; they are deferred pending confirmation of what `sentinel_os` already provides.
+- **Durability** (survives a restart): the in-memory `DecisionLedger` provides none. `FileLedgerStore` (see Durable store) adds durability against the death of the process, tested with a real `SIGKILL`; it is not proven against an OS crash or power loss. A restart with no store loses the ledger, and a freshly created ledger verifies cleanly, accepts the same event again, and fails `verify_against` only for a caller that kept a non-empty checkpoint taken before the restart (tested).
 
 ### Signing
 
@@ -94,6 +94,38 @@ These are three different properties and delta gives only the first, and only co
 **What it does not prove:** that the Decision was right; that the key holder is honest or careful (a key holder can sign a receipt for a ledger it rewrote); that the checkpoint inside the receipt was independently custodied (the receipt states the checkpoint, it cannot show where it was kept); or that the key is still trusted.
 
 Key custody, trust, rotation and revocation belong to the deployer's `sign` and `verify` callables. delta defines none of them.
+
+A checkpoint can be signed the same way (`CheckpointStore.write(cp, sign=...)`, `read(verify=...)`, domain tag `delta-ledger-checkpoint-signature/1\n`). That signature has the same limits and one more: it carries no freshness, so an old validly signed checkpoint is still validly signed. Forward-only is enforced by `CheckpointStore.write`, which anyone with file access can bypass.
+
+### Durable store
+
+`delta.FileLedgerStore(directory)` keeps `ledger.jsonl`, one JSON object per line: `{"v": 1, "entry": <the entry exactly as export() renders it>, "sum": <sha256 of the entry's canonical JSON>}`. Use `DecisionLedger(sink=store.sink)` to record. Standard library only.
+
+- **`sink(entry)`** appends one line, flushes and `os.fsync`s the file, and fsyncs the directory when the file is created (tested by counting `os.fsync` calls). It is idempotent by `audit_id`: if the last line holds the same entry it writes nothing (and still fsyncs, so a retry never acknowledges a line whose first fsync failed); the same `audit_id` with different content raises `StoreError`. It also refuses an entry whose `previous_hash` is not the last stored entry's hash, and refuses to append after a torn or damaged final line until `repair()` is run. A write that fails part-way is truncated back.
+- **`load(require_context=False)`** returns `(ledger, report)`. Each line's `sum` is checked and the ledger is rebuilt with `DecisionLedger.from_export`, so every hash and the chain are recomputed and nothing stored is trusted (a line edited with its `sum` fixed up is refused; so is a reordered or gapped file). A torn final line (no trailing newline, invalid JSON or a bad `sum`) is dropped and reported as `report["recovered_tail"] = {"count", "bytes"}`. Damage anywhere before the final line raises `StoreCorruptError` naming the line. `load` never writes. `require_context` is not stored in the file: say it again at load, and a ledger recorded with it but loaded without it is judged less strictly. `load(..., attach=True)` returns a ledger that records to the same store, for a restarted process to carry on.
+- **`repair()`** truncates a torn final line, and only that, then fsyncs. It refuses, changing nothing, when the damage is not confined to the final line.
+- **`CheckpointStore(path)`** is a separate file for the checkpoint: replaced atomically (temp file in the same directory, fsync, `os.replace`, directory fsync; a crash before the replace leaves the old file, tested by making `os.replace` raise), forward-only (a lower length, or the same length with a different head, is refused), typed on read (corrupt, mistyped or extra-key files are refused), and optionally signed (see Signing). **It is meant to live on separate storage. Independence is the deployer's responsibility: a checkpoint beside the file it protects is not independent.** Whoever can rewrite the ledger file can rewrite the checkpoint beside it, and `reconcile` will then agree (this is a test that is written to say so).
+- **`reconcile(store, checkpoint_store)`** loads (without repairing) and compares, returning `{"status", ...}`: `OK`; `UNWITNESSED_TAIL` (OK plus `unwitnessed`, the count of entries after the checkpoint, which nothing independent vouches for); `LOST` (the checkpoint is ahead of the file, so acknowledged entries are missing, including when a torn tail cut them off); `DIVERGED` (the history at the checkpoint's length differs, e.g. rewritten and re-chained); `NO_CHECKPOINT`; `EMPTY`. Mid-file damage raises `StoreCorruptError`.
+
+**The phantom.** The sink runs before the ledger commits, so the file can hold an entry the in-memory ledger rolled back, or one whose `append` raised after the sink returned. Such an entry was never acknowledged to the caller, but `load` includes it. A retry of the same Decision reproduces the same `audit_id` and is idempotent (tested: one line). A different Decision after a phantom is refused by the sink (its `previous_hash` does not continue the stored chain) rather than forking the file; recover by loading the store and carrying on from the loaded ledger.
+
+**Limits, stated plainly.**
+- The kill test is a real `SIGKILL` of a child process: every entry whose `append` had returned was found on load, with at most one further (unacknowledged) entry. **No OS-crash or power-loss test was run, and a process kill does not prove survival of either.**
+- `fsync` asks the OS to put the data on the device. It does not guarantee the device's own write cache is flushed (that depends on the filesystem, mount options and hardware), and on some platforms `os.fsync` does not flush the drive cache at all. Directory fsync on file creation is what makes the new name durable. Only Linux was tested. The directory fsync needs a platform that can open a directory; Windows is untested.
+- One writer per directory is assumed. Tested: two stores on one directory, taken in turn, with the second writer's ledger not built from the first's entries: the second is refused (`StoreError`), nothing interleaved. On POSIX the sink also holds an exclusive `flock` while it checks the last line and appends. **Two processes racing to append at the same moment is untested**, as is concurrent `CheckpointStore.write` from two processes.
+- A torn-line rule has a cost: a final line corrupted on purpose (bad `sum`) is dropped like a torn one. `report["recovered_tail"]` and `reconcile` (`LOST` or `UNWITNESSED_TAIL` against a checkpoint) are how that is noticed.
+- `load` reads the whole file into memory.
+
+### What each guarantee is
+
+| Property | What provides it | What it is not |
+|---|---|---|
+| Integrity (tamper evidence) | The hash chain, recomputed on load and on `from_export`, plus a checkpoint held where the ledger's writer cannot rewrite it (`reconcile`, `verify_export`) | Not given by the file or the line checksums: those catch accidents, not an attacker who recomputes them |
+| Availability (can still write after a fault) | `append` atomicity and healing in process; `repair()` and an idempotent sink after a torn write | Not high availability: a phantom or a stored-chain mismatch stops the sink until it is reconciled |
+| Durability (survives restart or crash) | `FileLedgerStore.sink`: fsync before the call returns; tested with a real `SIGKILL` | Not proven for OS crash or power loss; depends on the filesystem and device |
+| Authenticity (who produced a receipt) | Only the deployer's `sign` and `verify` over `verification_receipt` output (Signing) | Not given by the store; the store is not a database and does not make receipts authentic |
+
+These are four different properties. Having one says nothing about the others.
 
 ### Obligations
 
@@ -116,7 +148,7 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 
 | Gap | Detail |
 |---|---|
-| In-memory ledger | Process death loses the chain. No file backend (observe-perceive `execution_guard` has JSONL; this does not), no partial-write recovery, no external anchoring. `append` is atomic against faults inside the process (see below), not against a crash. Tamper-evidence holds only relative to a checkpoint kept outside the ledger. This is a reference ledger; production custody is sentinel_os. |
+| In-memory ledger, optional file store | `DecisionLedger` itself is in memory. `FileLedgerStore` (see Durable store) persists it across a process kill, but no OS-crash or power-loss test was run, one writer per directory is assumed, and tamper-evidence still holds only relative to a checkpoint kept outside the ledger's writer. `append` is atomic against faults inside the process (see below). This is a reference ledger; production custody is sentinel_os. |
 | Dual custody | Live orchestrator writes Conservation Kernel ledger + `ExecutionLedger`, not `delta.DecisionLedger`. sentinel_os writes Postgres. Three custody stories. |
 | Git dependencies | `zeta` and `beta` are pinned by commit in `pyproject.toml`; `tests/test_sibling_pins.py` holds the pins, so moving one is a reviewed change. They are not on a package index. |
 | Context is optional | Without a `context`, a repeat is accepted and no run is recorded. A caller that needs run boundaries must pass one; CNS's strict trace refuses an entry that has none. |
