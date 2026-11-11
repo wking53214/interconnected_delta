@@ -122,7 +122,7 @@ class LedgerEntry:
 
 _STR_FIELDS = (
     "entity_id", "decision_id", "decision", "decision_fingerprint", "reasoning", "instructions",
-    "content_fingerprint", "keyset_fingerprint", "confidence_basis",
+    "content_fingerprint", "keyset_fingerprint", "confidence_basis", "audit_hash",
 )
 
 

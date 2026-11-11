@@ -125,3 +125,24 @@ def test_n9_the_receipt_states_the_length_and_head_of_the_entries_it_verified():
     receipt = verification_receipt(ledger, cp, context=H.ctx_n(1), decision_digest=H.DD, index=0)
     assert receipt["ledger_length"] == 2
     assert receipt["ledger_head"] == ledger.entries[-1].immutable_hash
+
+
+# --- Intervention 3 (N7): append refuses an audit_hash that export would refuse ---------------------------------------
+
+class _Str(str):
+    pass
+
+
+@pytest.mark.parametrize("bad", [123, None, b"x", _Str("x")])
+def test_n7_append_refuses_an_audit_hash_that_is_not_exactly_a_str(bad):
+    ledger = DecisionLedger(require_context=True)
+    decision = dataclasses.replace(H.decision(0), audit_hash=bad)
+    with pytest.raises(TypeError, match="audit_hash"):
+        ledger.append(decision, context=H.ctx_n(1))
+    assert len(ledger) == 0 and ledger.verify_chain_integrity()
+
+
+def test_n7_append_and_export_agree_on_a_str_audit_hash():
+    ledger = DecisionLedger(require_context=True)
+    ledger.append(dataclasses.replace(H.decision(0), audit_hash="ptr-1"), context=H.ctx_n(1))
+    assert ledger.export()["entries"][0]["decision"]["audit_hash"] == "ptr-1"
