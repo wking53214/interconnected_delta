@@ -335,3 +335,91 @@ def test_f5_the_checkpoint_signing_input_refuses_a_non_utf8_head():
     from delta.store import CheckpointStore
     with pytest.raises(ValueError, match="head"):
         CheckpointStore._signing_input(LedgerCheckpoint(1, chr(0xD800)))
+
+
+# ---------------------------------------------------------------- F1: audit_hash is bound into the entry hash when it is set
+def _rechain(lines, edited_index):
+    """Rewrite stored lines so every hash from ``edited_index`` on is recomputed over the (edited) content."""
+    import hashlib
+    from delta.ledger import _canonical_subset, _entry_from_dict, _hash_dict, _GENESIS_SEED
+    previous = hashlib.sha256(_GENESIS_SEED).hexdigest()
+    out = []
+    for i, raw in enumerate(lines):
+        obj = json.loads(raw)
+        if i >= edited_index:
+            obj["entry"]["previous_hash"] = previous
+            entry = _entry_from_dict(i, obj["entry"], False)
+            obj["entry"]["immutable_hash"] = hashlib.sha256(
+                (previous + _hash_dict(_canonical_subset(
+                    entry.audit_id, entry.timestamp, entry.decision, entry.run_id, entry.event_id))).encode()
+            ).hexdigest()
+            obj["sum"] = _sum(obj["entry"])
+        previous = obj["entry"]["immutable_hash"]
+        out.append(_canonical(obj).encode())
+    return out
+
+
+def test_f1_an_entry_without_an_audit_hash_hashes_exactly_as_before():
+    import hashlib
+    from datetime import datetime
+    from delta.ledger import _GENESIS_SEED, _canonical_subset, _hash_dict
+    previous = hashlib.sha256(_GENESIS_SEED).hexdigest()
+    subset = _canonical_subset("aid-0001", datetime(2026, 1, 1, 12, 0, 5), make_decision(0), "run-1", "ev-1")
+    assert "audit_hash" not in subset
+    got = hashlib.sha256((previous + _hash_dict(subset)).encode()).hexdigest()
+    assert got == "dc7dbb986127631ee5469f02596669092b624c854a61ace55cc6edc8c3fc39a8"  # computed before this change
+
+
+def test_f1_a_set_audit_hash_is_hashed_and_changes_the_subset():
+    import dataclasses
+    from datetime import datetime
+    from delta.ledger import _canonical_subset
+    stamp = datetime(2026, 1, 1, 12, 0, 5)
+    plain = _canonical_subset("aid-0001", stamp, make_decision(0), "run-1", "ev-1")
+    bound = _canonical_subset("aid-0001", stamp, dataclasses.replace(make_decision(0), audit_hash="ptr-1"), "run-1", "ev-1")
+    assert bound.pop("audit_hash") == "ptr-1"
+    assert bound == plain
+
+
+def _stored_with_audit_hash(tmp_path, n=3):
+    import dataclasses
+    store = FileLedgerStore(tmp_path)
+    ledger = DecisionLedger(require_context=True, sink=store.sink)
+    for i in range(n):
+        ledger.append(dataclasses.replace(make_decision(i), audit_hash=f"ptr-{i}"), context=ctx_n(i + 1))
+    return store, ledger
+
+
+def _edit_audit_hash(store, index, value, rechain=False):
+    lines = open(store.path, "rb").read().split(b"\n")[:-1]
+    obj = json.loads(lines[index])
+    obj["entry"]["decision"]["audit_hash"] = value
+    obj["sum"] = _sum(obj["entry"])
+    lines[index] = _canonical(obj).encode()
+    if rechain:
+        lines = _rechain(lines, index)
+    with open(store.path, "wb") as fh:
+        fh.write(b"\n".join(lines) + b"\n")
+
+
+def test_f1_an_audit_hash_edited_with_a_fixed_sum_is_refused_by_load_and_from_export(tmp_path):
+    store, ledger = _stored_with_audit_hash(tmp_path)
+    _edit_audit_hash(store, 1, "forged")
+    with pytest.raises(StoreCorruptError, match="immutable_hash"):
+        store.load(True)
+    export = ledger.export()
+    export["entries"][1]["decision"]["audit_hash"] = "forged"
+    with pytest.raises(ValueError, match="immutable_hash"):
+        DecisionLedger.from_export(export)
+
+
+def test_f1_reconcile_does_not_report_ok_for_an_edited_audit_hash(tmp_path):
+    from delta.store import CheckpointStore, reconcile
+    store, ledger = _stored_with_audit_hash(tmp_path / "led")
+    cps = CheckpointStore(tmp_path / "cp" / "checkpoint.json")
+    cps.write(ledger.checkpoint())
+    _edit_audit_hash(store, 1, "forged")
+    with pytest.raises(StoreCorruptError):  # the stored hash no longer matches: refused before any status
+        reconcile(store, cps, require_context=True)
+    _edit_audit_hash(store, 1, "forged", rechain=True)  # an attacker who also re-chains is caught by the checkpoint
+    assert reconcile(store, cps, require_context=True)["status"] == "DIVERGED"

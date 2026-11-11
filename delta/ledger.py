@@ -161,6 +161,9 @@ def _canonical_subset(
     # one hashes exactly as before.
     if getattr(decision, "content_fingerprint", ""):
         subset["content_fingerprint"] = decision.content_fingerprint
+    # The Decision's ``audit_hash`` pointer, hashed only when set, so a Decision without one hashes exactly as before.
+    if getattr(decision, "audit_hash", ""):
+        subset["audit_hash"] = decision.audit_hash
     if run_id is not None:
         subset["run_id"] = run_id
     if event_id is not None:
