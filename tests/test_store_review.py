@@ -124,3 +124,35 @@ def test_f10_creating_the_checkpoint_directory_fsyncs_its_parent(tmp_path, monke
     assert str(tmp_path) in synced
     assert str(tmp_path / "a") in synced
     assert str(tmp_path / "a" / "cp") in synced
+
+
+# ---------------------------------------------------------------- F6: the checkpoint temp file is unpredictable and private
+def test_f6_a_symlink_planted_at_the_old_predictable_temp_name_is_not_followed(tmp_path):
+    import hashlib
+    import stat
+    import threading
+    from delta import LedgerCheckpoint
+    from delta.store import CheckpointStore
+    victim = tmp_path / "victim.txt"
+    victim.write_text("IMPORTANT DATA\n")
+    store = CheckpointStore(tmp_path / "checkpoint.json")
+    os.symlink(victim, f"{store.path}.tmp-{os.getpid()}-{threading.get_ident()}")
+    store.write(LedgerCheckpoint(1, hashlib.sha256(b"a").hexdigest()))
+    assert victim.read_text() == "IMPORTANT DATA\n"
+    assert not os.path.islink(store.path)
+    assert stat.S_IMODE(os.stat(store.path).st_mode) == 0o600
+    assert store.read().length == 1
+
+
+def test_f6_the_temp_file_comes_from_mkstemp_in_the_same_directory(tmp_path, monkeypatch):
+    import hashlib
+    import tempfile
+    from delta import LedgerCheckpoint
+    from delta.store import CheckpointStore
+    seen = []
+    real = tempfile.mkstemp
+    monkeypatch.setattr(tempfile, "mkstemp", lambda *a, **k: (seen.append(k.get("dir")), real(*a, **k))[1])
+    store = CheckpointStore(tmp_path / "sub" / "checkpoint.json")
+    store.write(LedgerCheckpoint(1, hashlib.sha256(b"a").hexdigest()))
+    assert seen == [str(tmp_path / "sub")]
+    assert sorted(os.listdir(tmp_path / "sub")) == ["checkpoint.json"]

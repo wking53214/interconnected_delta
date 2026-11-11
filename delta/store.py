@@ -8,6 +8,7 @@ semantics; one writer per directory).
 import hashlib
 import json
 import os
+import tempfile
 import threading
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -443,8 +444,7 @@ class CheckpointStore:
                     raise StoreError(f"refused: length {checkpoint.length} is lower than the stored {current.length}")
                 if checkpoint.length == current.length and checkpoint.head != current.head:
                     raise StoreError(f"refused: length {checkpoint.length} is stored with a different head")
-            temp = f"{self.path}.tmp-{os.getpid()}-{threading.get_ident()}"
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            fd, temp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(self.path) + ".", suffix=".tmp")  # O_EXCL, 0600
             try:
                 try:
                     _write_all(fd, data)
