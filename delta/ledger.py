@@ -587,7 +587,9 @@ class DecisionLedger:
         entries can reset the head, or recompute the whole chain, and it still verifies. A checkpoint held
         elsewhere does not move with them. This module cannot say where to keep it: that is the caller's.
         """
-        return LedgerCheckpoint(len(self.entries), self.chain_head)
+        # One locked snapshot (healing a pending commit first), so the length and head are a pair that belongs together.
+        _, head, length = self.snapshot()
+        return LedgerCheckpoint(length, head)
 
     def verify_against(self, checkpoint: LedgerCheckpoint) -> bool:
         """Whether the whole chain verifies AND still contains the history the checkpoint recorded.
@@ -684,7 +686,8 @@ class DecisionLedger:
         return ledger
 
     def __len__(self) -> int:
-        return len(self.entries)
+        # Under the lock and after healing, like snapshot(), so a half-done commit is never counted.
+        return self.snapshot()[2]
 
 
 _CALL_SINK_CODE = DecisionLedger._call_sink.__code__
