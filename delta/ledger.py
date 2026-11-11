@@ -338,6 +338,10 @@ class DecisionLedger:
             raise RuntimeError("append from inside a sink is not allowed")
         if type(decision) is not Decision:
             raise TypeError(f"delta records beta.Decision only; got {type(decision).__name__}")
+        # A str is an iterable of str, so the copy below would store it as its characters: refuse it before the copy.
+        for name in _TUPLE_FIELDS:
+            if isinstance(getattr(decision, name), str):
+                raise TypeError(f"Decision.{name} must be a list or tuple of str, not a str")
         # Copy first, reading each caller-supplied iterable exactly once, then judge and record that copy only: an
         # iterable that answers differently on a later read cannot be stored differently from what was validated.
         decision = dataclasses.replace(decision, **{name: tuple(getattr(decision, name)) for name in _TUPLE_FIELDS})

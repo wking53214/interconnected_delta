@@ -146,3 +146,36 @@ def test_n7_append_and_export_agree_on_a_str_audit_hash():
     ledger = DecisionLedger(require_context=True)
     ledger.append(dataclasses.replace(H.decision(0), audit_hash="ptr-1"), context=H.ctx_n(1))
     assert ledger.export()["entries"][0]["decision"]["audit_hash"] == "ptr-1"
+
+
+# --- Intervention 4: a str given for a tuple field is refused, not stored as its characters --------------------------
+
+_TUPLE_FIELDS = ("triggered_by_locks", "triggered_by_keys", "newly_triggered_locks", "reversal_conditions")
+
+
+def _with_field(name, value):
+    from beta import Decision
+
+    base = H.decision(0)
+    decision = object.__new__(Decision)  # beta's constructor may not take it; the ledger must refuse it either way
+    for f in dataclasses.fields(Decision):
+        object.__setattr__(decision, f.name, getattr(base, f.name))
+    object.__setattr__(decision, name, value)
+    return decision
+
+
+@pytest.mark.parametrize("name", _TUPLE_FIELDS)
+@pytest.mark.parametrize("bad", ["abc", _Str("abc")])
+def test_a_str_for_a_tuple_field_is_refused(name, bad):
+    ledger = DecisionLedger()
+    with pytest.raises(TypeError, match=name):
+        ledger.append(_with_field(name, bad))
+    assert len(ledger) == 0
+
+
+@pytest.mark.parametrize("name", _TUPLE_FIELDS)
+@pytest.mark.parametrize("good", [["a", "b"], ("a", "b")])
+def test_a_list_or_tuple_of_str_is_still_accepted_for_a_tuple_field(name, good):
+    ledger = DecisionLedger()
+    entry = ledger.append(_with_field(name, good))
+    assert getattr(entry.decision, name) == ("a", "b")
