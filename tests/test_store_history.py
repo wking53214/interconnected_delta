@@ -7,7 +7,7 @@ checkpoint's length, and write a checkpoint the store accepted: forward-only com
 import os
 
 import pytest
-from store_support import ctx_n, make_decision
+from store_support import cp_from, ctx_n, ledger_of, make_decision
 
 from delta import DecisionLedger
 from delta.store import CheckpointStore, FileLedgerStore, StoreError, reconcile
@@ -173,6 +173,17 @@ def test_the_first_checkpoint_needs_no_stored_one_to_extend_but_must_match_histo
 
 
 # ---- a symlinked ledger file is not followed on a write --------------------------------------------------------
+
+def test_a_sound_stored_checkpoint_cannot_be_replaced_without_history(tmp_path):
+    grown = ledger_of(5)
+    store = CheckpointStore(tmp_path / "checkpoint.json")
+    store.write(cp_from(grown, 3))
+    with pytest.raises(StoreError, match="does not extend the stored one"):
+        store.write(cp_from(grown, 5))  # no history: the store cannot tell this from a rebuilt ledger
+    assert store.read() == cp_from(grown, 3)
+    store.write(cp_from(grown, 5), history=grown)
+    assert store.read() == cp_from(grown, 5)
+
 
 def test_the_sink_does_not_follow_a_symlinked_ledger_file(tmp_path):
     store = FileLedgerStore(tmp_path / "ledger")
