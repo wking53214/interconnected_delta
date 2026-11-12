@@ -175,7 +175,7 @@ def test_f7_two_store_objects_cannot_move_the_checkpoint_backwards(tmp_path, mon
 
     def run_b():
         try:
-            b.write(LedgerCheckpoint(10, H("h10")))
+            b.write(LedgerCheckpoint(10, H("h10")), length_only=True)
         except Exception as exc:  # pragma: no cover - reported below
             errors.append(exc)
 
@@ -189,7 +189,7 @@ def test_f7_two_store_objects_cannot_move_the_checkpoint_backwards(tmp_path, mon
         real(fd, data)
 
     monkeypatch.setattr(st, "_write_all", interleave)
-    a.write(LedgerCheckpoint(6, H("h6")))
+    a.write(LedgerCheckpoint(6, H("h6")), length_only=True)
     for thread in threads:
         thread.join()
     assert errors == []
@@ -236,7 +236,7 @@ def test_f7_the_lock_is_held_from_the_check_through_the_directory_fsync(tmp_path
         real(directory)
 
     monkeypatch.setattr(st, "_fsync_dir", probe)
-    store.write(LedgerCheckpoint(2, hashlib.sha256(b"h2").hexdigest()))
+    store.write(LedgerCheckpoint(2, hashlib.sha256(b"h2").hexdigest()), length_only=True)
     assert states == ["held"]
     fd = os.open(str(path) + ".lock", os.O_RDWR)
     try:
@@ -288,7 +288,7 @@ def test_f8_a_verified_existing_file_still_gates_forward_only(tmp_path):
     store.write(LedgerCheckpoint(5, hashlib.sha256(b"h5").hexdigest()), sign=sign, verify=verify)
     with pytest.raises(StoreError, match="lower"):
         store.write(LedgerCheckpoint(4, hashlib.sha256(b"h4").hexdigest()), sign=sign, verify=verify)
-    store.write(LedgerCheckpoint(6, hashlib.sha256(b"h6").hexdigest()), sign=sign, verify=verify)
+    store.write(LedgerCheckpoint(6, hashlib.sha256(b"h6").hexdigest()), sign=sign, verify=verify, length_only=True)
     assert store.read(verify=verify).length == 6
 
 

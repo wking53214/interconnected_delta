@@ -475,6 +475,7 @@ class CheckpointStore:
         verify: Optional[Callable[[bytes, bytes], bool]] = None,
         replace_corrupt: bool = False,
         history: Optional[DecisionLedger] = None,
+        length_only: bool = False,
     ) -> None:
         """Replace the stored checkpoint atomically (temp file in the same directory, fsync, ``os.replace``, fsync of
         the directory). Forward-only: a lower length, or the same length with a different head, is a ``StoreError``;
@@ -491,8 +492,9 @@ class CheckpointStore:
         that: the new checkpoint must be the head of ``history`` at its own length, and when a sound checkpoint is
         stored, ``history`` must hold at least that many entries with the stored head at the stored length, that is, the
         new checkpoint extends the stored one. A checkpoint taken with ``DecisionLedger.checkpoint()`` carries the entries it
-        was taken from and is checked the same way without ``history``; one built by hand or read from a dict has no lineage
-        and is compared by length only."""
+        was taken from and is checked the same way without ``history``. One built by hand, read from a dict, or returned by
+        ``read`` has no lineage: written over a stored checkpoint it is refused unless ``history`` is given or the caller
+        says ``length_only=True`` (the old, weaker comparison, by length and head at that length). The first checkpoint needs neither."""
         if history is not None and not isinstance(history, DecisionLedger):
             raise TypeError(f"history must be a DecisionLedger; got {type(history).__name__}")
         if not isinstance(checkpoint, LedgerCheckpoint):
@@ -524,7 +526,7 @@ class CheckpointStore:
             try:
                 if fcntl is not None:
                     fcntl.flock(lock_fd, fcntl.LOCK_EX)  # held from the forward-only check through the directory fsync
-                self._replace_forward_only(checkpoint, data, directory, verify, replace_corrupt, source)
+                self._replace_forward_only(checkpoint, data, directory, verify, replace_corrupt, source, length_only)
             finally:
                 os.close(lock_fd)  # closing releases the flock
 
@@ -532,6 +534,7 @@ class CheckpointStore:
         self, checkpoint: LedgerCheckpoint, data: bytes, directory: str,
         verify: Optional[Callable[[bytes, bytes], bool]], replace_corrupt: bool,
         source: Any = None,
+        length_only: bool = False,
     ) -> None:
         """The check and the replace; the caller holds the lock. ``source`` is the entries the new checkpoint is checked against."""
         current = None
@@ -550,6 +553,12 @@ class CheckpointStore:
                 raise StoreError(f"refused: length {checkpoint.length} is lower than the stored {current.length}")
             if checkpoint.length == current.length and checkpoint.head != current.head:
                 raise StoreError(f"refused: length {checkpoint.length} is stored with a different head")
+        if source is None and current is not None and not length_only:
+            raise StoreError(
+                "refused: this checkpoint carries no history (it was built by hand, read from a dict or returned by read), "
+                "so it cannot be shown to extend the stored one; take it from ledger.checkpoint(), pass history=<the ledger>, "
+                "or pass length_only=True to compare by length alone"
+            )
         if source is not None:
             try:
                 entries = tuple(source)  # one read, so a list that answers differently later cannot matter

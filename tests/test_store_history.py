@@ -229,7 +229,7 @@ def test_a_checkpoint_built_by_hand_or_loaded_from_a_dict_is_compared_by_length_
     store, cps, ledger = setup(tmp_path, 3)
     fill(store, 1, start=3, ledger=ledger)
     taken = ledger.checkpoint()
-    cps.write(LedgerCheckpoint(taken.length, taken.head))  # no lineage: nothing to compare, as documented
+    cps.write(LedgerCheckpoint(taken.length, taken.head), length_only=True)  # no lineage: only the explicit flag allows it
     assert cps.read().length == 4
 
 
@@ -278,3 +278,100 @@ def test_against_must_be_a_checkpoint_store_or_none(tmp_path):
     store, cps, _ = setup(tmp_path, 2)
     with pytest.raises(TypeError, match="against"):
         store.load(True, attach=True, against="checkpoint.json")
+
+
+# ---- a checkpoint with no lineage may not replace a stored one unless the caller says it is compared by length only ----
+
+def test_a_checkpoint_round_tripped_through_json_is_refused_over_a_stored_one(tmp_path):
+    from delta.ledger import LedgerCheckpoint
+    store, cps, ledger = setup(tmp_path, 3)
+    fill(store, 1, start=3, ledger=ledger)
+    bare = LedgerCheckpoint.from_dict(ledger.checkpoint().to_dict())  # what a checkpoint sent as JSON becomes
+    with pytest.raises(StoreError, match="length_only"):
+        cps.write(bare)
+    assert cps.read().length == 3
+
+
+def test_a_checkpoint_read_back_from_the_store_is_refused_over_a_stored_one(tmp_path):
+    store, cps, ledger = setup(tmp_path, 3)
+    with pytest.raises(StoreError, match="length_only"):
+        cps.write(cps.read())
+
+
+def test_the_laundering_sequence_with_a_json_round_trip_is_refused(tmp_path):
+    from delta.ledger import LedgerCheckpoint
+    store, cps, _ = setup(tmp_path, 3)
+    os.remove(store.path)
+    restarted = DecisionLedger(require_context=True, sink=store.sink)
+    for i in range(10, 14):
+        restarted.append(make_decision(i), context=ctx_n(i + 1))
+    bare = LedgerCheckpoint.from_dict(restarted.checkpoint().to_dict())
+    with pytest.raises(StoreError):
+        cps.write(bare)
+    assert reconcile(store, cps, require_context=True)["status"] != "OK"
+
+
+def test_length_only_is_the_explicit_way_to_write_a_checkpoint_without_lineage(tmp_path):
+    from delta.ledger import LedgerCheckpoint
+    store, cps, ledger = setup(tmp_path, 3)
+    fill(store, 1, start=3, ledger=ledger)
+    bare = LedgerCheckpoint.from_dict(ledger.checkpoint().to_dict())
+    cps.write(bare, length_only=True)
+    assert cps.read().length == 4
+
+
+def test_the_first_checkpoint_needs_no_lineage_and_no_flag(tmp_path):
+    from delta.ledger import LedgerCheckpoint
+    store = FileLedgerStore(tmp_path / "ledger")
+    cps = CheckpointStore(tmp_path / "custody" / "checkpoint.json")
+    ledger = fill(store, 2)
+    cps.write(LedgerCheckpoint.from_dict(ledger.checkpoint().to_dict()))
+    assert cps.read().length == 2
+
+
+def test_history_given_makes_a_lineage_less_checkpoint_acceptable_when_it_extends(tmp_path):
+    from delta.ledger import LedgerCheckpoint
+    store, cps, ledger = setup(tmp_path, 3)
+    fill(store, 1, start=3, ledger=ledger)
+    bare = LedgerCheckpoint.from_dict(ledger.checkpoint().to_dict())
+    cps.write(bare, history=ledger)
+    assert cps.read().length == 4
+
+
+def test_length_only_does_not_waive_a_history_that_is_given(tmp_path):
+    store, cps, ledger = setup(tmp_path, 3)
+    other = DecisionLedger(require_context=True)
+    for i in (50, 51, 52, 53):
+        other.append(make_decision(i), context=ctx_n(i + 1))
+    with pytest.raises(StoreError, match="extend"):
+        cps.write(other.checkpoint(), history=other, length_only=True)
+
+
+# ---- two safeguards the third review found untested ------------------------------------------------------------
+
+def test_a_lineage_is_read_once(tmp_path):
+    """A lineage that is not a plain tuple and answers differently on a second read: the first read is what is checked."""
+    from delta.ledger import LedgerCheckpoint
+    store, cps, ledger = setup(tmp_path, 3)
+    fill(store, 1, start=3, ledger=ledger)
+    honest = ledger.checkpoint()
+
+    class Once:
+        reads = 0
+
+        def __iter__(self):
+            Once.reads += 1
+            return iter(honest.lineage if Once.reads == 1 else ())
+
+    cps.write(LedgerCheckpoint(honest.length, honest.head, Once()))  # type: ignore[arg-type]
+    assert Once.reads == 1 and cps.read().length == 4
+
+
+@pytest.mark.parametrize("junk", [[1, 2, 3], (None,) * 5, "abcdef", 7])
+def test_a_lineage_that_is_not_ledger_entries_is_a_store_error(tmp_path, junk):
+    from delta.ledger import LedgerCheckpoint
+    store, cps, ledger = setup(tmp_path, 3)
+    fill(store, 1, start=3, ledger=ledger)
+    taken = ledger.checkpoint()
+    with pytest.raises(StoreError, match="history"):
+        cps.write(LedgerCheckpoint(taken.length, taken.head, junk))  # type: ignore[arg-type]
