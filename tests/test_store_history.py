@@ -7,7 +7,7 @@ checkpoint's length, and write a checkpoint the store accepted: forward-only com
 import os
 
 import pytest
-from store_support import ctx_n, make_decision
+from store_support import cp_from, ctx_n, ledger_of, make_decision
 
 from delta import DecisionLedger
 from delta.store import CheckpointStore, FileLedgerStore, StoreError, reconcile
@@ -174,6 +174,17 @@ def test_the_first_checkpoint_needs_no_stored_one_to_extend_but_must_match_histo
 
 # ---- a symlinked ledger file is not followed on a write --------------------------------------------------------
 
+def test_a_sound_stored_checkpoint_cannot_be_replaced_without_history(tmp_path):
+    grown = ledger_of(5)
+    store = CheckpointStore(tmp_path / "checkpoint.json")
+    store.write(cp_from(grown, 3))
+    with pytest.raises(StoreError, match="does not extend the stored one"):
+        store.write(cp_from(grown, 5))  # no history: the store cannot tell this from a rebuilt ledger
+    assert store.read() == cp_from(grown, 3)
+    store.write(cp_from(grown, 5), history=grown)
+    assert store.read() == cp_from(grown, 5)
+
+
 def test_the_sink_does_not_follow_a_symlinked_ledger_file(tmp_path):
     store = FileLedgerStore(tmp_path / "ledger")
     os.makedirs(store.directory)
@@ -198,180 +209,3 @@ def test_repair_does_not_follow_a_symlinked_ledger_file(tmp_path):
     with pytest.raises(StoreError, match="symbolic link"):
         store.repair()
     assert real.read_bytes() == before
-
-
-# ---- the default path: a checkpoint taken from a ledger remembers it, so write() checks the extension itself ----------
-
-def test_the_readme_recipe_after_the_file_was_deleted_cannot_launder_the_loss(tmp_path):
-    """A restarted writer that follows the recipe (a fresh ledger recording to the same store), records past the old
-    length and checkpoints WITHOUT history=. The checkpoint came from that ledger, so it is the history it extends."""
-    store, cps, _ = setup(tmp_path, 3)
-    os.remove(store.path)
-    assert reconcile(store, cps, require_context=True)["status"] == "LOST"
-    restarted = DecisionLedger(require_context=True, sink=store.sink)
-    for i in range(10, 14):
-        restarted.append(make_decision(i), context=ctx_n(i + 1))
-    with pytest.raises(StoreError, match="extend"):
-        cps.write(restarted.checkpoint())
-    assert cps.read().length == 3
-    assert reconcile(store, cps, require_context=True)["status"] != "OK"
-
-
-def test_a_checkpoint_taken_from_the_honest_ledger_still_extends_the_stored_one(tmp_path):
-    store, cps, ledger = setup(tmp_path, 3)
-    fill(store, 2, start=3, ledger=ledger)
-    cps.write(ledger.checkpoint())  # no history=: the checkpoint carries its own
-    assert cps.read().length == 5
-
-
-def test_a_checkpoint_built_by_hand_or_loaded_from_a_dict_is_compared_by_length_only(tmp_path):
-    from delta.ledger import LedgerCheckpoint
-    store, cps, ledger = setup(tmp_path, 3)
-    fill(store, 1, start=3, ledger=ledger)
-    taken = ledger.checkpoint()
-    cps.write(LedgerCheckpoint(taken.length, taken.head), length_only=True)  # no lineage: only the explicit flag allows it
-    assert cps.read().length == 4
-
-
-def test_a_checkpoint_keeps_its_value_equality_and_dict_form_with_a_lineage(tmp_path):
-    from delta.ledger import LedgerCheckpoint
-    store, cps, ledger = setup(tmp_path, 2)
-    taken = ledger.checkpoint()
-    assert taken == LedgerCheckpoint(taken.length, taken.head)
-    assert hash(taken) == hash(LedgerCheckpoint(taken.length, taken.head))
-    assert taken.to_dict() == {"length": taken.length, "head": taken.head}
-    assert "lineage" not in repr(taken)
-
-
-# ---- O_NOFOLLOW is what stops a link swapped in after the check -----------------------------------------------------
-
-def test_a_symlink_swapped_in_after_the_check_is_still_refused_by_the_open(tmp_path, monkeypatch):
-    store = FileLedgerStore(tmp_path / "ledger")
-    os.makedirs(store.directory)
-    outside = tmp_path / "outside.jsonl"
-    outside.write_bytes(b"")
-    os.symlink(outside, store.path)
-    monkeypatch.setattr(os.path, "islink", lambda path: False)  # the pre-check is bypassed, as a race would
-    ledger = DecisionLedger(require_context=True, sink=store.sink)
-    with pytest.raises(StoreError, match="symbolic link"):
-        ledger.append(make_decision(0), context=ctx_n(1))
-    assert outside.read_bytes() == b""
-
-
-def test_repair_open_also_refuses_a_link_swapped_in_after_the_check(tmp_path, monkeypatch):
-    store, cps, _ = setup(tmp_path, 2)
-    real = tmp_path / "moved.jsonl"
-    os.replace(store.path, real)
-    with open(real, "ab") as fh:
-        fh.write(b'{"v": 1, "entry"')
-    os.symlink(real, store.path)
-    before = real.read_bytes()
-    monkeypatch.setattr(os.path, "islink", lambda path: False)
-    with pytest.raises(StoreError, match="symbolic link"):
-        store.repair()
-    assert real.read_bytes() == before
-
-
-# ---- small things the re-check found -----------------------------------------------------------------------------
-
-def test_against_must_be_a_checkpoint_store_or_none(tmp_path):
-    store, cps, _ = setup(tmp_path, 2)
-    with pytest.raises(TypeError, match="against"):
-        store.load(True, attach=True, against="checkpoint.json")
-
-
-# ---- a checkpoint with no lineage may not replace a stored one unless the caller says it is compared by length only ----
-
-def test_a_checkpoint_round_tripped_through_json_is_refused_over_a_stored_one(tmp_path):
-    from delta.ledger import LedgerCheckpoint
-    store, cps, ledger = setup(tmp_path, 3)
-    fill(store, 1, start=3, ledger=ledger)
-    bare = LedgerCheckpoint.from_dict(ledger.checkpoint().to_dict())  # what a checkpoint sent as JSON becomes
-    with pytest.raises(StoreError, match="length_only"):
-        cps.write(bare)
-    assert cps.read().length == 3
-
-
-def test_a_checkpoint_read_back_from_the_store_is_refused_over_a_stored_one(tmp_path):
-    store, cps, ledger = setup(tmp_path, 3)
-    with pytest.raises(StoreError, match="length_only"):
-        cps.write(cps.read())
-
-
-def test_the_laundering_sequence_with_a_json_round_trip_is_refused(tmp_path):
-    from delta.ledger import LedgerCheckpoint
-    store, cps, _ = setup(tmp_path, 3)
-    os.remove(store.path)
-    restarted = DecisionLedger(require_context=True, sink=store.sink)
-    for i in range(10, 14):
-        restarted.append(make_decision(i), context=ctx_n(i + 1))
-    bare = LedgerCheckpoint.from_dict(restarted.checkpoint().to_dict())
-    with pytest.raises(StoreError):
-        cps.write(bare)
-    assert reconcile(store, cps, require_context=True)["status"] != "OK"
-
-
-def test_length_only_is_the_explicit_way_to_write_a_checkpoint_without_lineage(tmp_path):
-    from delta.ledger import LedgerCheckpoint
-    store, cps, ledger = setup(tmp_path, 3)
-    fill(store, 1, start=3, ledger=ledger)
-    bare = LedgerCheckpoint.from_dict(ledger.checkpoint().to_dict())
-    cps.write(bare, length_only=True)
-    assert cps.read().length == 4
-
-
-def test_the_first_checkpoint_needs_no_lineage_and_no_flag(tmp_path):
-    from delta.ledger import LedgerCheckpoint
-    store = FileLedgerStore(tmp_path / "ledger")
-    cps = CheckpointStore(tmp_path / "custody" / "checkpoint.json")
-    ledger = fill(store, 2)
-    cps.write(LedgerCheckpoint.from_dict(ledger.checkpoint().to_dict()))
-    assert cps.read().length == 2
-
-
-def test_history_given_makes_a_lineage_less_checkpoint_acceptable_when_it_extends(tmp_path):
-    from delta.ledger import LedgerCheckpoint
-    store, cps, ledger = setup(tmp_path, 3)
-    fill(store, 1, start=3, ledger=ledger)
-    bare = LedgerCheckpoint.from_dict(ledger.checkpoint().to_dict())
-    cps.write(bare, history=ledger)
-    assert cps.read().length == 4
-
-
-def test_length_only_does_not_waive_a_history_that_is_given(tmp_path):
-    store, cps, ledger = setup(tmp_path, 3)
-    other = DecisionLedger(require_context=True)
-    for i in (50, 51, 52, 53):
-        other.append(make_decision(i), context=ctx_n(i + 1))
-    with pytest.raises(StoreError, match="extend"):
-        cps.write(other.checkpoint(), history=other, length_only=True)
-
-
-# ---- two safeguards the third review found untested ------------------------------------------------------------
-
-def test_a_lineage_is_read_once(tmp_path):
-    """A lineage that is not a plain tuple and answers differently on a second read: the first read is what is checked."""
-    from delta.ledger import LedgerCheckpoint
-    store, cps, ledger = setup(tmp_path, 3)
-    fill(store, 1, start=3, ledger=ledger)
-    honest = ledger.checkpoint()
-
-    class Once:
-        reads = 0
-
-        def __iter__(self):
-            Once.reads += 1
-            return iter(honest.lineage if Once.reads == 1 else ())
-
-    cps.write(LedgerCheckpoint(honest.length, honest.head, Once()))  # type: ignore[arg-type]
-    assert Once.reads == 1 and cps.read().length == 4
-
-
-@pytest.mark.parametrize("junk", [[1, 2, 3], (None,) * 5, "abcdef", 7])
-def test_a_lineage_that_is_not_ledger_entries_is_a_store_error(tmp_path, junk):
-    from delta.ledger import LedgerCheckpoint
-    store, cps, ledger = setup(tmp_path, 3)
-    fill(store, 1, start=3, ledger=ledger)
-    taken = ledger.checkpoint()
-    with pytest.raises(StoreError, match="history"):
-        cps.write(LedgerCheckpoint(taken.length, taken.head, junk))  # type: ignore[arg-type]

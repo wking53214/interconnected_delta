@@ -4,6 +4,7 @@ from datetime import datetime
 
 from beta import Decision, content_fingerprint, decision_fingerprint
 
+from delta import DecisionLedger, LedgerCheckpoint
 from delta.context import CONTEXT_SCHEMA
 
 T0 = datetime(2026, 1, 1, 12, 0, 0)
@@ -21,3 +22,16 @@ def make_decision(i=0, entity="p1"):
 
 def ctx_n(n, entity="p1"):
     return {"schema": CONTEXT_SCHEMA, "entity_id": entity, "event_id": f"ev-{n}", "run_id": f"run-{n}"}
+
+
+def ledger_of(n):
+    """A real ledger of n entries (the same entries cp_at builds), to pass as ``history=`` when a stored checkpoint exists."""
+    ledger = DecisionLedger(require_context=True)
+    for i in range(n):
+        ledger.append(make_decision(i), context=ctx_n(i + 1))
+    return ledger
+
+
+def cp_from(ledger, k):
+    """The checkpoint of ``ledger`` at length k, with the head it really has at that length."""
+    return LedgerCheckpoint(k, ledger.entries[k - 1].immutable_hash)

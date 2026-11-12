@@ -68,10 +68,6 @@ class LedgerCheckpoint:
 
     length: int
     head: str
-    # The entries of the ledger this checkpoint was taken from (``DecisionLedger.checkpoint`` sets it), so a store can
-    # check that a new checkpoint extends the stored one. Not part of the value: it takes no part in equality, hashing,
-    # ``repr`` or ``to_dict``, and a checkpoint built by hand or read back from a dict has none.
-    lineage: Optional[tuple] = field(default=None, compare=False, repr=False)
 
     def to_dict(self) -> dict:
         """A plain JSON-able dict: ``{"length": int, "head": str}``."""
@@ -599,8 +595,8 @@ class DecisionLedger:
         elsewhere does not move with them. This module cannot say where to keep it: that is the caller's.
         """
         # One locked snapshot (healing a pending commit first), so the length and head are a pair that belongs together.
-        entries, head, length = self.snapshot()
-        return LedgerCheckpoint(length, head, entries)
+        _, head, length = self.snapshot()
+        return LedgerCheckpoint(length, head)
 
     def verify_against(self, checkpoint: LedgerCheckpoint) -> bool:
         """Whether the whole chain verifies AND still contains the history the checkpoint recorded.

@@ -26,8 +26,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
-          # cryptography is the tests' Ed25519 fixture only. It is installed here and not declared in pyproject.toml, because
-          # the CNS spine manifest check allows no such dependency in a spine repository's extras.
           python -m pip install "cryptography>=42"
 
       - name: Run test suite
@@ -53,8 +51,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[cns,dev]"
-          # cryptography is the tests' Ed25519 fixture only. It is installed here and not declared in pyproject.toml, because
-          # the CNS spine manifest check allows no such dependency in a spine repository's extras.
           python -m pip install "cryptography>=42"
 
       - name: Run the test suite with CNS present
