@@ -5,6 +5,7 @@ checksum, and the ledger is rebuilt through ``DecisionLedger.from_export`` so ev
 The README says what this does and does not give (durability across a process kill, not integrity by itself; fsync
 semantics; one writer per directory).
 """
+import errno
 import hashlib
 import json
 import os
@@ -180,6 +181,16 @@ class FileLedgerStore:
         if os.path.islink(self.path):
             raise StoreError(f"{self.path} is a symbolic link; the store does not write through it")
 
+    def _open_no_follow(self, flags: int, mode: int = 0o644) -> int:
+        """Open the ledger file for writing without following a link, so a link swapped in after ``_refuse_symlink`` is
+        still refused (``O_NOFOLLOW`` makes that open fail with ELOOP). A link in a parent directory is followed."""
+        try:
+            return os.open(self.path, flags | getattr(os, "O_NOFOLLOW", 0), mode)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise StoreError(f"{self.path} is a symbolic link; the store does not write through it") from exc
+            raise
+
     # ------------------------------------------------------------------ writing
     def sink(self, entry: LedgerEntry) -> None:
         """Append one entry and fsync it (and the directory, when the file is created) before returning.
@@ -194,7 +205,7 @@ class FileLedgerStore:
             _make_directory(self.directory)
             self._refuse_symlink()
             created = not os.path.exists(self.path)
-            fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o644)
+            fd = self._open_no_follow(os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
             try:
                 if fcntl is not None:
                     fcntl.flock(fd, fcntl.LOCK_EX)
@@ -320,8 +331,12 @@ class FileLedgerStore:
         ``DIVERGED`` and ``NO_CHECKPOINT`` raise ``StoreError`` naming the status; to bootstrap a store that has entries
         and no checkpoint, load without attaching, write ``ledger.checkpoint()`` to the checkpoint store, then attach).
         ``against=None`` attaches with no comparison and says so by name. Without ``attach``, ``against`` is only
-        reported (``report["reconcile"]``) and never refuses.
+        reported (``report["reconcile"]``) and does not refuse a status (an unreadable or unverifiable checkpoint still
+        raises ``StoreError``). The comparison can only vouch for entries up to the checkpoint's length: entries recorded
+        after the last checkpoint (``UNWITNESSED_TAIL``) can still be lost or rewritten unseen.
         """
+        if against is not _UNSET and against is not None and not isinstance(against, CheckpointStore):
+            raise TypeError(f"against must be a CheckpointStore or None; got {type(against).__name__}")
         if attach and against is _UNSET:
             raise StoreError(
                 "load(attach=True) must be told what to compare the file with: against=<CheckpointStore> (refuses a "
@@ -364,7 +379,7 @@ class FileLedgerStore:
         with self._lock:
             if tail["count"]:
                 self._refuse_symlink()
-                fd = os.open(self.path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+                fd = self._open_no_follow(os.O_RDWR)
                 try:
                     if fcntl is not None:
                         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -475,11 +490,16 @@ class CheckpointStore:
         recorded past the old length and checkpointed. ``history`` (the ledger the new checkpoint was taken from) closes
         that: the new checkpoint must be the head of ``history`` at its own length, and when a sound checkpoint is
         stored, ``history`` must hold at least that many entries with the stored head at the stored length, that is, the
-        new checkpoint extends the stored one. Without ``history`` only the length comparison is made."""
+        new checkpoint extends the stored one. A checkpoint taken with ``DecisionLedger.checkpoint()`` carries the entries it
+        was taken from and is checked the same way without ``history``; one built by hand or read from a dict has no lineage
+        and is compared by length only."""
         if history is not None and not isinstance(history, DecisionLedger):
             raise TypeError(f"history must be a DecisionLedger; got {type(history).__name__}")
         if not isinstance(checkpoint, LedgerCheckpoint):
             raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
+        # The history to check against: the one given, else the one the checkpoint was taken from (none for a checkpoint
+        # built by hand or read from a dict, which is then compared by length only).
+        source: Any = history.entries if history is not None else checkpoint.lineage
         try:
             checkpoint = LedgerCheckpoint.from_dict(checkpoint.to_dict())
         except ValueError as exc:
@@ -504,16 +524,16 @@ class CheckpointStore:
             try:
                 if fcntl is not None:
                     fcntl.flock(lock_fd, fcntl.LOCK_EX)  # held from the forward-only check through the directory fsync
-                self._replace_forward_only(checkpoint, data, directory, verify, replace_corrupt, history)
+                self._replace_forward_only(checkpoint, data, directory, verify, replace_corrupt, source)
             finally:
                 os.close(lock_fd)  # closing releases the flock
 
     def _replace_forward_only(
         self, checkpoint: LedgerCheckpoint, data: bytes, directory: str,
         verify: Optional[Callable[[bytes, bytes], bool]], replace_corrupt: bool,
-        history: Optional[DecisionLedger] = None,
+        source: Any = None,
     ) -> None:
-        """The check and the replace; the caller holds the lock."""
+        """The check and the replace; the caller holds the lock. ``source`` is the entries the new checkpoint is checked against."""
         current = None
         if os.path.exists(self.path):
             try:
@@ -530,19 +550,23 @@ class CheckpointStore:
                 raise StoreError(f"refused: length {checkpoint.length} is lower than the stored {current.length}")
             if checkpoint.length == current.length and checkpoint.head != current.head:
                 raise StoreError(f"refused: length {checkpoint.length} is stored with a different head")
-        if history is not None:
-            entries = history.entries
-            if checkpoint.length > len(entries) or entries[checkpoint.length - 1].immutable_hash != checkpoint.head:
-                raise StoreError(
-                    f"refused: the checkpoint at length {checkpoint.length} is not the head of the given history at that length"
-                )
-            if current is not None and (
-                current.length > len(entries) or entries[current.length - 1].immutable_hash != current.head
-            ):
-                raise StoreError(
-                    f"refused: the new checkpoint does not extend the stored one (the given history has {len(entries)} "
-                    f"entries and does not hold the stored head at length {current.length})"
-                )
+        if source is not None:
+            try:
+                entries = tuple(source)  # one read, so a list that answers differently later cannot matter
+                if checkpoint.length > len(entries) or entries[checkpoint.length - 1].immutable_hash != checkpoint.head:
+                    raise StoreError(
+                        f"refused: the checkpoint at length {checkpoint.length} is not the head of the history it was taken from "
+                        "(or of the given history) at that length"
+                    )
+                if current is not None and (
+                    current.length > len(entries) or entries[current.length - 1].immutable_hash != current.head
+                ):
+                    raise StoreError(
+                        f"refused: the new checkpoint does not extend the stored one (its history has {len(entries)} "
+                        f"entries and does not hold the stored head at length {current.length})"
+                    )
+            except (AttributeError, IndexError, TypeError) as exc:
+                raise StoreError(f"refused: the history given for this checkpoint cannot be read as ledger entries: {exc}") from exc
         fd, temp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(self.path) + ".", suffix=".tmp")  # O_EXCL, 0600
         try:
             try:
