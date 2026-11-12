@@ -475,7 +475,8 @@ class CheckpointStore:
         recorded past the old length and checkpointed. ``history`` (the ledger the new checkpoint was taken from) closes
         that: the new checkpoint must be the head of ``history`` at its own length, and when a sound checkpoint is
         stored, ``history`` must hold at least that many entries with the stored head at the stored length, that is, the
-        new checkpoint extends the stored one. Without ``history`` only the length comparison is made."""
+        new checkpoint extends the stored one. Without ``history``, a sound stored checkpoint cannot be replaced at all: the store cannot tell an honest new
+        checkpoint from one of a rebuilt ledger, so the write is refused (``StoreError``). A first write needs no history."""
         if history is not None and not isinstance(history, DecisionLedger):
             raise TypeError(f"history must be a DecisionLedger; got {type(history).__name__}")
         if not isinstance(checkpoint, LedgerCheckpoint):
@@ -530,6 +531,13 @@ class CheckpointStore:
                 raise StoreError(f"refused: length {checkpoint.length} is lower than the stored {current.length}")
             if checkpoint.length == current.length and checkpoint.head != current.head:
                 raise StoreError(f"refused: length {checkpoint.length} is stored with a different head")
+        if history is None and current is not None:
+            # A checkpoint carries only a length and a head, so the store cannot tell a rebuilt ledger from an honest
+            # one by comparing them. Only the ledger itself can show the new checkpoint extends the stored one.
+            raise StoreError(
+                "refused: the new checkpoint does not extend the stored one, and no history was given to show that it "
+                "does; pass history=the ledger the checkpoint was taken from"
+            )
         if history is not None:
             entries = history.entries
             if checkpoint.length > len(entries) or entries[checkpoint.length - 1].immutable_hash != checkpoint.head:

@@ -3,7 +3,7 @@ import json
 import os
 
 import pytest
-from store_support import ctx_n, make_decision
+from store_support import cp_from, ctx_n, ledger_of, make_decision
 
 from delta import DecisionLedger
 from delta.store import FileLedgerStore, StoreCorruptError, StoreError, _canonical, _sum
@@ -160,22 +160,20 @@ def test_f6_the_temp_file_comes_from_mkstemp_in_the_same_directory(tmp_path, mon
 
 # ---------------------------------------------------------------- F7: forward-only holds across store objects
 def test_f7_two_store_objects_cannot_move_the_checkpoint_backwards(tmp_path, monkeypatch):
-    import hashlib
     import threading
     import time
     import delta.store as st
-    from delta import LedgerCheckpoint
-    H = lambda c: hashlib.sha256(c.encode()).hexdigest()  # noqa: E731
+    L10 = ledger_of(10)
     path = tmp_path / "checkpoint.json"
     a, b = st.CheckpointStore(path), st.CheckpointStore(path)
-    a.write(LedgerCheckpoint(5, H("h5")))
+    a.write(cp_from(L10, 5))
     real = st._write_all
     errors = []
     threads = []
 
     def run_b():
         try:
-            b.write(LedgerCheckpoint(10, H("h10")))
+            b.write(cp_from(L10, 10), history=L10)
         except Exception as exc:  # pragma: no cover - reported below
             errors.append(exc)
 
@@ -189,7 +187,7 @@ def test_f7_two_store_objects_cannot_move_the_checkpoint_backwards(tmp_path, mon
         real(fd, data)
 
     monkeypatch.setattr(st, "_write_all", interleave)
-    a.write(LedgerCheckpoint(6, H("h6")))
+    a.write(cp_from(L10, 6), history=L10)
     for thread in threads:
         thread.join()
     assert errors == []
@@ -214,12 +212,11 @@ def st_checkpoint(path):
 
 def test_f7_the_lock_is_held_from_the_check_through_the_directory_fsync(tmp_path, monkeypatch):
     import fcntl
-    import hashlib
     import delta.store as st
-    from delta import LedgerCheckpoint
     path = tmp_path / "checkpoint.json"
     store = st.CheckpointStore(path)
-    store.write(LedgerCheckpoint(1, hashlib.sha256(b"h1").hexdigest()))
+    L2 = ledger_of(2)
+    store.write(cp_from(L2, 1))
     states = []
     real = st._fsync_dir
 
@@ -236,7 +233,7 @@ def test_f7_the_lock_is_held_from_the_check_through_the_directory_fsync(tmp_path
         real(directory)
 
     monkeypatch.setattr(st, "_fsync_dir", probe)
-    store.write(LedgerCheckpoint(2, hashlib.sha256(b"h2").hexdigest()))
+    store.write(cp_from(L2, 2), history=L2)
     assert states == ["held"]
     fd = os.open(str(path) + ".lock", os.O_RDWR)
     try:
@@ -280,15 +277,14 @@ def test_f8_a_bad_signature_on_the_existing_file_is_corrupt(tmp_path):
 
 
 def test_f8_a_verified_existing_file_still_gates_forward_only(tmp_path):
-    import hashlib
-    from delta import LedgerCheckpoint
     from delta.store import CheckpointStore
     sign, verify = _signer()
     store = CheckpointStore(tmp_path / "checkpoint.json")
-    store.write(LedgerCheckpoint(5, hashlib.sha256(b"h5").hexdigest()), sign=sign, verify=verify)
+    L6 = ledger_of(6)
+    store.write(cp_from(L6, 5), sign=sign, verify=verify)
     with pytest.raises(StoreError, match="lower"):
-        store.write(LedgerCheckpoint(4, hashlib.sha256(b"h4").hexdigest()), sign=sign, verify=verify)
-    store.write(LedgerCheckpoint(6, hashlib.sha256(b"h6").hexdigest()), sign=sign, verify=verify)
+        store.write(cp_from(L6, 4), sign=sign, verify=verify)
+    store.write(cp_from(L6, 6), sign=sign, verify=verify, history=L6)
     assert store.read(verify=verify).length == 6
 
 
@@ -468,7 +464,7 @@ def test_f11_an_old_signed_checkpoint_replayed_after_a_tail_rewrite_reads_unwitn
     old = open(cps.path, "rb").read()
     for i in range(2, 5):
         ledger.append(make_decision(i), context=ctx_n(i + 1))
-    cps.write(ledger.checkpoint(), sign=sign)
+    cps.write(ledger.checkpoint(), sign=sign, history=ledger)
     os.remove(store.path)
     fork = DecisionLedger(require_context=True, sink=FileLedgerStore(tmp_path / "led").sink)
     for i in range(2):

@@ -8,7 +8,7 @@ import os
 import pytest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from store_support import ctx_n, make_decision
+from store_support import ctx_n, ledger_of, make_decision
 
 from delta import DecisionLedger, LedgerCheckpoint
 from delta.store import CHECKPOINT_SIGNATURE_DOMAIN, CheckpointStore, StoreError
@@ -61,7 +61,7 @@ def test_a_crash_between_the_temp_write_and_the_replace_leaves_the_old_checkpoin
 
     monkeypatch.setattr(os, "replace", crash)
     with pytest.raises(OSError):
-        store.write(cp_at(4))
+        store.write(cp_at(4), history=ledger_of(4))
     monkeypatch.undo()
     assert open(store.path, "rb").read() == before and store.read() == cp_at(2)
     assert sorted(os.listdir(tmp_path)) == ["checkpoint.json", "checkpoint.json.lock"]  # F7: the lock file; no temp file left behind
@@ -109,8 +109,8 @@ def test_forward_only_the_same_length_with_a_different_head_is_refused(tmp_path)
 def test_forward_only_the_same_value_and_a_longer_one_are_accepted(tmp_path):
     store = CheckpointStore(tmp_path / "checkpoint.json")
     store.write(cp_at(3))
-    store.write(cp_at(3))
-    store.write(cp_at(5))
+    store.write(cp_at(3), history=ledger_of(3))
+    store.write(cp_at(5), history=ledger_of(5))
     assert store.read() == cp_at(5)
 
 
@@ -268,5 +268,5 @@ def test_a_signed_write_that_is_the_same_value_replaces_an_unsigned_file(tmp_pat
     sign, verify = keys
     store = CheckpointStore(tmp_path / "checkpoint.json")
     store.write(cp_at(2))
-    store.write(cp_at(2), sign=sign)
+    store.write(cp_at(2), sign=sign, history=ledger_of(2))
     assert store.read(verify=verify) == cp_at(2)
