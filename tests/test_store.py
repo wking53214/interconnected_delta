@@ -68,7 +68,7 @@ def test_a_missing_file_loads_as_an_empty_ledger_and_creates_nothing(tmp_path):
 def test_a_loaded_ledger_can_carry_on_recording_to_the_same_store(tmp_path):
     store = FileLedgerStore(tmp_path)
     fill(store, 2)
-    loaded, _ = store.load(require_context=True, attach=True)
+    loaded, _ = store.load(require_context=True, attach=True, against=None)
     loaded.append(make_decision(2), context=ctx_n(3))
     again, _ = FileLedgerStore(tmp_path).load(require_context=True)
     assert len(again) == 3 and again.chain_head == loaded.chain_head

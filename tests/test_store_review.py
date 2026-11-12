@@ -447,7 +447,7 @@ def test_f9_the_phantom_retry_is_idempotent_only_for_the_same_entry_timestamp(tm
     ledger._sink = real
     ledger.append(make_decision(1), datetime(2026, 1, 1, 12, 0, 1), context=ctx_n(2))  # same timestamp: one line
     assert len(store.load(True)[0]) == 2
-    ledger3, _ = store.load(True, attach=True)
+    ledger3, _ = store.load(True, attach=True, against=None)
     ledger3._sink = sink_then_fail
     with pytest.raises(Boom):
         ledger3.append(make_decision(2), datetime(2026, 1, 1, 12, 0, 2), context=ctx_n(3))

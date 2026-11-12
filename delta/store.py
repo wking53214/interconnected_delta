@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 LEDGER_FILE = "ledger.jsonl"
+_UNSET: Any = object()  # "load(attach=True) was not told what to compare with"
 LOCK_SUFFIX = ".lock"
 LINE_VERSION = 1
 CHECKPOINT_SIGNATURE_DOMAIN = b"delta-ledger-checkpoint-signature/1\n"
@@ -174,6 +175,11 @@ class FileLedgerStore:
         self.path = os.path.join(self.directory, LEDGER_FILE)
         self._lock = threading.Lock()
 
+    def _refuse_symlink(self) -> None:
+        """A write never follows a symbolic link: the line would land outside the store and still be acknowledged."""
+        if os.path.islink(self.path):
+            raise StoreError(f"{self.path} is a symbolic link; the store does not write through it")
+
     # ------------------------------------------------------------------ writing
     def sink(self, entry: LedgerEntry) -> None:
         """Append one entry and fsync it (and the directory, when the file is created) before returning.
@@ -186,8 +192,9 @@ class FileLedgerStore:
         line, rendered = _render_line(entry)
         with self._lock:
             _make_directory(self.directory)
+            self._refuse_symlink()
             created = not os.path.exists(self.path)
-            fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
+            fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o644)
             try:
                 if fcntl is not None:
                     fcntl.flock(fd, fcntl.LOCK_EX)
@@ -236,7 +243,7 @@ class FileLedgerStore:
     @classmethod
     def _last_entry(cls, fd: int, size: int) -> Tuple[Optional[dict], bool]:
         """The last stored entry, verified the way ``load`` would: parsed by the entry parser, its hash recomputed,
-        and linked to the line before it. Anything else is a ``StoreError``; a file ``load`` would refuse is not built on.
+        and linked to the line before it. Anything else is a ``StoreError``; the sink checks the last lines only, so a file damaged earlier is still appended to: ``load`` or ``reconcile`` is what finds it.
         Returns ``(entry, only_line)``; ``only_line`` is true when the file holds exactly that one line."""
         if size == 0:
             return None, False
@@ -289,7 +296,14 @@ class FileLedgerStore:
             tail_bytes = len(unterminated)
         return entries, offset, {"count": 1 if tail_bytes else 0, "bytes": tail_bytes}
 
-    def load(self, require_context: bool = False, *, attach: bool = False) -> Tuple[DecisionLedger, dict]:
+    def load(
+        self,
+        require_context: bool = False,
+        *,
+        attach: bool = False,
+        against: Any = _UNSET,
+        verify: Optional[Callable[[bytes, bytes], bool]] = None,
+    ) -> Tuple[DecisionLedger, dict]:
         """Rebuild the ledger from the file, trusting nothing: ``(ledger, report)``. Never writes.
 
         Every line's checksum is verified and the ledger is rebuilt through ``DecisionLedger.from_export``, so every
@@ -298,7 +312,21 @@ class FileLedgerStore:
         file that does not rebuild into a verifying chain, raises ``StoreCorruptError`` naming the line. A missing file
         is an empty ledger. ``attach=True`` makes the returned ledger record to this store, so a restarted process can
         carry on; the default returns a ledger with no sink.
+
+        ``attach=True`` must be told what to compare the file with, because a ledger rebuilt from a file that lost or
+        rewrote acknowledged entries would otherwise carry on from the damage and later checkpoints would launder it:
+        ``against=<CheckpointStore>`` runs the same comparison as ``reconcile`` (``verify`` is passed to the checkpoint
+        read) and refuses to attach unless the status is ``OK``, ``UNWITNESSED_TAIL`` or ``EMPTY`` (``LOST``,
+        ``DIVERGED`` and ``NO_CHECKPOINT`` raise ``StoreError`` naming the status; to bootstrap a store that has entries
+        and no checkpoint, load without attaching, write ``ledger.checkpoint()`` to the checkpoint store, then attach).
+        ``against=None`` attaches with no comparison and says so by name. Without ``attach``, ``against`` is only
+        reported (``report["reconcile"]``) and never refuses.
         """
+        if attach and against is _UNSET:
+            raise StoreError(
+                "load(attach=True) must be told what to compare the file with: against=<CheckpointStore> (refuses a "
+                "store that lost or rewrote acknowledged entries) or against=None (no comparison)"
+            )
         entries, valid_bytes, tail = self._scan()
         head = entries[-1]["immutable_hash"] if entries and type(entries[-1].get("immutable_hash")) is str else _genesis()
         try:
@@ -313,9 +341,17 @@ class FileLedgerStore:
                 if digits.isdigit():
                     where = f"line {int(digits) + 1} of {self.path}: "
             raise StoreCorruptError(f"{where}{text}") from exc
+        report = {"entries": len(entries), "valid_bytes": valid_bytes, "recovered_tail": tail}
+        if against is not _UNSET and against is not None:
+            compared = _compare(ledger, tail, against, verify)
+            report["reconcile"] = compared
+            if attach and compared["status"] not in ("OK", "UNWITNESSED_TAIL", "EMPTY"):
+                raise StoreError(
+                    f"refused to attach: reconcile says {compared['status']} ({_describe(compared)}); the file does not "
+                    "continue the history the independent checkpoint vouches for"
+                )
         if attach:
             ledger._sink = self.sink
-        report = {"entries": len(entries), "valid_bytes": valid_bytes, "recovered_tail": tail}
         return ledger, report
 
     def repair(self) -> dict:
@@ -327,7 +363,8 @@ class FileLedgerStore:
         tail = report["recovered_tail"]
         with self._lock:
             if tail["count"]:
-                fd = os.open(self.path, os.O_RDWR)
+                self._refuse_symlink()
+                fd = os.open(self.path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
                 try:
                     if fcntl is not None:
                         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -343,7 +380,7 @@ class FileLedgerStore:
 
 
 class CheckpointStore:
-    """One checkpoint in one file, meant to live on storage the ledger's writer cannot rewrite.
+    """One checkpoint in one file, which only helps if it lives on storage the ledger file's attacker cannot rewrite.
 
     Independence is the deployer's responsibility. A checkpoint kept beside the ledger file it protects is not
     independent: whoever can rewrite one can rewrite the other, and ``reconcile`` will then agree with the rewrite.
@@ -422,6 +459,7 @@ class CheckpointStore:
         sign: Optional[Callable[[bytes], bytes]] = None,
         verify: Optional[Callable[[bytes, bytes], bool]] = None,
         replace_corrupt: bool = False,
+        history: Optional[DecisionLedger] = None,
     ) -> None:
         """Replace the stored checkpoint atomically (temp file in the same directory, fsync, ``os.replace``, fsync of
         the directory). Forward-only: a lower length, or the same length with a different head, is a ``StoreError``;
@@ -431,7 +469,15 @@ class CheckpointStore:
         is unsigned or fails ``verify`` is corrupt, and ``StoreCorruptError`` is raised instead of treating its length as
         a floor (a planted huge checkpoint would otherwise block every later write). The remedy is an explicit
         ``replace_corrupt=True``, which replaces a corrupt file without the forward-only comparison; a file that is
-        sound still gates forward-only either way."""
+        sound still gates forward-only either way.
+
+        Forward-only by length alone is not enough: a ledger rebuilt from a file that lost or rewrote entries can be
+        recorded past the old length and checkpointed. ``history`` (the ledger the new checkpoint was taken from) closes
+        that: the new checkpoint must be the head of ``history`` at its own length, and when a sound checkpoint is
+        stored, ``history`` must hold at least that many entries with the stored head at the stored length, that is, the
+        new checkpoint extends the stored one. Without ``history`` only the length comparison is made."""
+        if history is not None and not isinstance(history, DecisionLedger):
+            raise TypeError(f"history must be a DecisionLedger; got {type(history).__name__}")
         if not isinstance(checkpoint, LedgerCheckpoint):
             raise TypeError(f"expected a LedgerCheckpoint; got {type(checkpoint).__name__}")
         try:
@@ -458,13 +504,14 @@ class CheckpointStore:
             try:
                 if fcntl is not None:
                     fcntl.flock(lock_fd, fcntl.LOCK_EX)  # held from the forward-only check through the directory fsync
-                self._replace_forward_only(checkpoint, data, directory, verify, replace_corrupt)
+                self._replace_forward_only(checkpoint, data, directory, verify, replace_corrupt, history)
             finally:
                 os.close(lock_fd)  # closing releases the flock
 
     def _replace_forward_only(
         self, checkpoint: LedgerCheckpoint, data: bytes, directory: str,
         verify: Optional[Callable[[bytes, bytes], bool]], replace_corrupt: bool,
+        history: Optional[DecisionLedger] = None,
     ) -> None:
         """The check and the replace; the caller holds the lock."""
         current = None
@@ -483,6 +530,19 @@ class CheckpointStore:
                 raise StoreError(f"refused: length {checkpoint.length} is lower than the stored {current.length}")
             if checkpoint.length == current.length and checkpoint.head != current.head:
                 raise StoreError(f"refused: length {checkpoint.length} is stored with a different head")
+        if history is not None:
+            entries = history.entries
+            if checkpoint.length > len(entries) or entries[checkpoint.length - 1].immutable_hash != checkpoint.head:
+                raise StoreError(
+                    f"refused: the checkpoint at length {checkpoint.length} is not the head of the given history at that length"
+                )
+            if current is not None and (
+                current.length > len(entries) or entries[current.length - 1].immutable_hash != current.head
+            ):
+                raise StoreError(
+                    f"refused: the new checkpoint does not extend the stored one (the given history has {len(entries)} "
+                    f"entries and does not hold the stored head at length {current.length})"
+                )
         fd, temp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(self.path) + ".", suffix=".tmp")  # O_EXCL, 0600
         try:
             try:
@@ -520,10 +580,18 @@ def reconcile(
     with whatever it was rewritten to.
     """
     ledger, report = store.load(require_context)
+    return _compare(ledger, report["recovered_tail"], checkpoint_store, verify)
+
+
+def _compare(
+    ledger: DecisionLedger, recovered_tail: dict, checkpoint_store: CheckpointStore,
+    verify: Optional[Callable[[bytes, bytes], bool]],
+) -> dict:
+    """The comparison ``reconcile`` returns and ``FileLedgerStore.load(against=...)`` acts on."""
     length = len(ledger)
     result: dict = {
         "status": "", "ledger_length": length, "checkpoint_length": None, "unwitnessed": 0,
-        "recovered_tail": report["recovered_tail"],
+        "recovered_tail": recovered_tail,
     }
     if not checkpoint_store.exists():
         result["status"] = "EMPTY" if length == 0 else "NO_CHECKPOINT"
@@ -541,6 +609,14 @@ def reconcile(
     else:
         result["status"] = "OK"
     return result
+
+
+def _describe(result: dict) -> str:
+    if result["status"] == "LOST":
+        return f"the checkpoint is at length {result['checkpoint_length']}, the file holds {result['ledger_length']}"
+    if result["status"] == "DIVERGED":
+        return f"the file's head at length {result['checkpoint_length']} differs from the checkpoint's"
+    return f"the file holds {result['ledger_length']} entries and no checkpoint is stored"
 
 
 __all__ = [
