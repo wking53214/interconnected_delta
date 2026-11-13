@@ -1,6 +1,10 @@
 """Fairness bridge: resolved OutcomeObligations -> cohort-level
 disparate-impact screening.
 
+Scope: the screen below is the United States EEOC four-fifths rule for employment-selection procedures. Whether it, or its 0.8
+threshold, is the right check for another domain or jurisdiction is the deployer's decision; delta does not make that decision, and a
+result from it is a screening finding, not a legal conclusion.
+
 Extracted from sentinel_os's regulatory_checks.py: CohortDecision and
 check_statistical_outcome_equity are copied faithfully --
   - the EEOC four-fifths rule (29 CFR 1607.4(D)): a group's favorable-

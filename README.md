@@ -20,7 +20,7 @@ Unlike α/ζ/β (unifying duplicated patterns), δ is mostly **wiring of already
 |---|---|
 | `ledger.py` | Extracted from PERCEIVE `ImmutableAuditLedger` (`perceive_consolidated.py:579-633`): genesis + SHA-256 chain + recompute-to-verify. Generalized from PERCEIVE's entry shape to any `beta.Decision`. |
 | `obligation.py` | Near-verbatim from sentinel_os `outcome_v1.py`: `MaturationRule`, `OutcomeObligation`, OPEN → RESOLVED / ABANDONED / stay-open. Bound to `Decision.decision_fingerprint` instead of a raw ledger row hash. Provenance rule: claims are verified / attested / estimated — never "probably". |
-| `fairness.py` | Extracted from sentinel_os `regulatory_checks.py`: EEOC four-fifths screen (29 CFR 1607.4(D)). `CohortDecision` + `check_statistical_outcome_equity`. |
+| `fairness.py` | Extracted from sentinel_os `regulatory_checks.py`: EEOC four-fifths screen (29 CFR 1607.4(D)), a US rule for employment-selection procedures; whether it fits another domain or jurisdiction is the deployer's decision. `CohortDecision` + `check_statistical_outcome_equity`. |
 | `decision_obligations.py` | **New.** `DecisionObligationTracker` adapter. `outcome_v1` operated on generic row dicts. |
 
 ### Ledger
