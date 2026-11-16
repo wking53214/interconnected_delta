@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # The commits the runtime dependencies install. Moving one is a reviewed change.
-EXPECTED_BETA_PIN = "c321174a09d76c6fa2d82c80a6e587e94ede03b5"
-EXPECTED_ZETA_PIN = "cd22c2d12ad3353ded7fc37ad15018394c1d0f25"
+EXPECTED_BETA_PIN = "9c0d71775f27974c182f67bf85da7ad8cfe43a81"
+EXPECTED_ZETA_PIN = "97f789969299573f2fcdd3243ca9b6c8dbfc46be"
 
 
 # pyproject is read as text: tomllib needs Python 3.11 and the floor here is 3.9.
