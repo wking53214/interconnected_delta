@@ -222,7 +222,7 @@ from delta.fairness import CohortDecision, RegulatoryFinding
 Who runs this order: CNS's script `chains/spine_run.py`, not observe-perceive's orchestrator (see section 1 for the evidence).
 
 Production-shaped sibling (not imported): [`sentinel_os`](https://github.com/wking53214/sentinel_os) `outcome_v1.py`, `regulatory_checks.py`, `governance/ledger_postgres.py`.  
-Example: `examples/full_pipeline.py`. It does not run today (EXECUTED 2026-11-17, with alpha `5ed5ca9` installed): it stops at `ImportError: cannot import name 'VitalsObservation' from 'alpha'`, because alpha 0.2.0 moved that name into `alpha.packs.pediatric_vitals`. The repair is a one-line import in the example, which is code and was not changed in this documentation pass. The working end-to-end run of the four stages is CNS's `chains/spine_run.py`.
+Example: `examples/full_pipeline.py` (EXECUTED 2026-11-19 against alpha, beta and zeta mains: exit 0). The same four stages run end to end in CNS's `chains/spine_run.py`.
 
 ## Optional CNS connection
 
