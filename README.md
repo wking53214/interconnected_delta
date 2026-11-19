@@ -2,6 +2,18 @@
 
 Records `beta.Decision`s in a hash-chained ledger, tracks outcome obligations, screens cohorts for disparate impact. Version `0.1.0`. Depends on ζ and β (git). Python ≥ 3.10.
 
+## Role Within ≡TACK
+
+- **What it is.** The custody stage of the small reference spine: a hash-chained ledger of `beta.Decision`s, outcome obligations, and a four-fifths cohort screen.
+- **Authority matrix.** Evidence generation (the chain, exports, receipts) and evidence verification of its own chain (`verify_chain_integrity`, `verify_export`, `reconcile`). It does not define policy, enforce, authorize or authenticate. Signing is a hook only (`delta.signing`), so no signatures are made here.
+- **Owns.** The ledger, the file store and checkpoint store, obligations and the fairness screen.
+- **Does not own.** Detection (alpha), locks (zeta), decisions (beta), the orchestrator's own ledgers, production custody (sentinel_os), or independent observation of outcomes.
+- **Depends on.** `zeta` and `beta`, pinned by git commit. CNS is optional.
+- **Depended on by.** UNKNOWN (not inspected here).
+- **Fail behavior.** Closed on bad input and on a corrupt head (`LedgerCorruptError`). Weaker where stated below: tamper evidence needs a checkpoint held outside the writer's reach, `load` drops and reports a torn final line (`recovered_tail`) rather than refusing, and `resolve()` trusts the caller's resolved value and provenance string.
+
+Status: library, version 0.1.0. EXECUTED 2026-11-17 at `78bb3e7`, Python 3.13, in a fresh environment: `pip install -e ".[dev]" cryptography` then `pytest` gives 363 passed, 12 skipped (the twelve need CNS). With the `cns` extra installed and `DELTA_REQUIRE_CNS=1`, which is how CI's second job runs, 661 passed and none skipped. Not run: GitHub CI, Python 3.10 to 3.12, an OS-crash or power-loss test.
+
 ## 1. Pipeline Position & Role
 
 **CUSTODY** of the extracted spine. Fourth stage.
@@ -9,6 +21,8 @@ Records `beta.Decision`s in a hash-chained ledger, tracks outcome obligations, s
 ```text
 α Alpha (Keys) → ζ Zeta (Locks) → β Beta (Decision) → δ Delta (this repo)
 ```
+
+The order above is the design order. CNS's script `chains/spine_run.py` runs all four repos in this order (EXECUTED 2026-11-17: exit 0 against the four mains). observe-perceive's orchestrator does not call them.
 
 This is where the real-time decision half (α/ζ/β) meets mature obligation and fairness machinery already present in [`sentinel_os`](https://github.com/wking53214/sentinel_os). Domain-blind production custody remains sentinel_os (Postgres, twin, sealed demographic channel). δ is the in-process extract that can consume a `beta.Decision`.
 
@@ -19,7 +33,7 @@ Unlike α/ζ/β (unifying duplicated patterns), δ is mostly **wiring of already
 | Module | Provenance |
 |---|---|
 | `ledger.py` | Extracted from PERCEIVE `ImmutableAuditLedger` (`perceive_consolidated.py:579-633`): genesis + SHA-256 chain + recompute-to-verify. Generalized from PERCEIVE's entry shape to any `beta.Decision`. |
-| `obligation.py` | Near-verbatim from sentinel_os `outcome_v1.py`: `MaturationRule`, `OutcomeObligation`, OPEN → RESOLVED / ABANDONED / stay-open. Bound to `Decision.decision_fingerprint` instead of a raw ledger row hash. Provenance rule: claims are verified / attested / estimated — never "probably". |
+| `obligation.py` | Near-verbatim from sentinel_os `outcome_v1.py`: `MaturationRule`, `OutcomeObligation`, OPEN → RESOLVED / ABANDONED / stay-open. Bound to `Decision.decision_fingerprint` instead of a raw ledger row hash. Provenance rule: claims are verified / attested / estimated, never "probably". |
 | `fairness.py` | Extracted from sentinel_os `regulatory_checks.py`: EEOC four-fifths screen (29 CFR 1607.4(D)), a US rule for employment-selection procedures; whether it fits another domain or jurisdiction is the deployer's decision. `CohortDecision` + `check_statistical_outcome_equity`. |
 | `decision_obligations.py` | **New.** `DecisionObligationTracker` adapter. `outcome_v1` operated on generic row dicts. |
 
@@ -138,9 +152,11 @@ These are four different properties. Having one says nothing about the others.
 
 Not every decision owes one. A `decision_id` with no registered `MaturationRule` opens nothing (IVR quality settled at hangup is the motivating case). `open_for_decision` is thread-safe (check-then-insert under a lock). Duplicate open of the same `decision_fingerprint:kind` raises.
 
+**Obligations are held in memory only.** `FileLedgerStore` persists ledger entries, not obligations, and `DecisionObligationTracker` has no save or load. After a restart the ledger reloads and every obligation, open or resolved, is gone (EXECUTED 2026-11-17: three entries reloaded from the file, zero obligations). A caller who needs an obligation to outlive the process must store it itself.
+
 ### Fairness
 
-Four-fifths screening on **weighted** group distributions. Cohort size uses **informative** rows (those with non-zero group weight), not raw `len(cohort)` — a cohort of 30 of which 2 carry weight must not pass the size gate as if it had 30 observations. Fewer than two groups with sufficient weight → indeterminate, not a spurious pass. A four-fifths flag is a **screening signal, not a legal determination**.
+Four-fifths screening on **weighted** group distributions. Cohort size uses **informative** rows (those with non-zero group weight), not raw `len(cohort)`, a cohort of 30 of which 2 carry weight must not pass the size gate as if it had 30 observations. Fewer than two groups with sufficient weight → indeterminate, not a spurious pass. A four-fifths flag is a **screening signal, not a legal determination**.
 
 ## 3. What It Does NOT Do / Non-Goals
 
@@ -156,13 +172,13 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 | Gap | Detail |
 |---|---|
 | In-memory ledger, optional file store | `DecisionLedger` itself is in memory. `FileLedgerStore` (see Durable store) persists it across a process kill, but no OS-crash or power-loss test was run, one writer per directory is assumed (the sink takes a lock; checkpoint writes take theirs), and tamper-evidence still holds only relative to a checkpoint kept outside the ledger's writer. `append` is atomic against faults inside the process (see below). This is a reference ledger; production custody is sentinel_os. |
-| Dual custody | Live orchestrator writes Conservation Kernel ledger + `ExecutionLedger`, not `delta.DecisionLedger`. sentinel_os writes Postgres. Three custody stories. |
+| Dual custody | The orchestrator writes Conservation Kernel ledger + `ExecutionLedger`, not `delta.DecisionLedger`. sentinel_os writes Postgres. Three custody stories. |
 | Git dependencies | `zeta` and `beta` are pinned by commit in `pyproject.toml`; `tests/test_sibling_pins.py` holds the pins, so moving one is a reviewed change. They are not on a package index. |
 | Context is optional | Without a `context`, a repeat is accepted and no run is recorded. A caller that needs run boundaries must pass one; CNS's strict trace refuses an entry that has none. |
 | Fairness inputs | `group_distribution` must be supplied by the caller. δ does not estimate race/ethnicity (that's sentinel_os `bisg_estimator`, and even that is a proxy). |
 | `MIN_COHORT_SIZE_FOR_STATISTICAL_TEST` / `FOUR_FIFTHS_THRESHOLD` | Named constants. Four-fifths is the regulatory 0.8; cohort minimum is a tunable. |
 | No independent twin | sentinel_os twin is not ported. |
-| Actor self-report | Not used as ground truth here, but δ also does not independently observe outcomes — `resolve()` trusts caller-supplied `resolved_value` + `provenance` string. |
+| Actor self-report | Not used as ground truth here, but δ also does not independently observe outcomes, `resolve()` trusts caller-supplied `resolved_value` + `provenance` string. |
 
 ## 5. Core Invariants & Guarantees
 
@@ -203,8 +219,10 @@ from delta.fairness import CohortDecision, RegulatoryFinding
                CohortDecision[] → four-fifths screen
 ```
 
+Who runs this order: CNS's script `chains/spine_run.py`, not observe-perceive's orchestrator (see section 1 for the evidence).
+
 Production-shaped sibling (not imported): [`sentinel_os`](https://github.com/wking53214/sentinel_os) `outcome_v1.py`, `regulatory_checks.py`, `governance/ledger_postgres.py`.  
-Example: `examples/full_pipeline.py`.
+Example: `examples/full_pipeline.py`. It does not run today (EXECUTED 2026-11-17, with alpha `5ed5ca9` installed): it stops at `ImportError: cannot import name 'VitalsObservation' from 'alpha'`, because alpha 0.2.0 moved that name into `alpha.packs.pediatric_vitals`. The repair is a one-line import in the example, which is code and was not changed in this documentation pass. The working end-to-end run of the four stages is CNS's `chains/spine_run.py`.
 
 ## Optional CNS connection
 
