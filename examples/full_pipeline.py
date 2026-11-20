@@ -20,7 +20,7 @@ Run: PYTHONPATH=.:/path/to/zeta:/path/to/beta:/path/to/alpha python3 examples/fu
 from datetime import datetime, timedelta
 
 from zeta import Combination, LockEvaluator, LockRegistry, LockSpec
-from alpha import VitalsObservation, observe
+from alpha.packs.pediatric_vitals import VitalsObservation, observe
 from beta import Decision, DecisionEngine, DecisionRule, DecisionRuleRegistry
 
 from delta import (
