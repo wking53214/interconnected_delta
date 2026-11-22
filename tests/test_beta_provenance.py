@@ -106,3 +106,57 @@ def test_a_decision_without_provenance_hashes_and_exports_as_before():
 def test_the_export_always_writes_all_three_fields():
     for d in (engine_decision(), make_decision(0)):
         assert set(PROVENANCE_FIELDS) <= set(_decision_to_dict(d))
+
+
+# ------------------------------------------------------------ a supplied-test Decision is never recorded
+
+def supplied_test_decision():
+    from zeta import LockEvaluator
+    registry = LockRegistry([LockSpec(lock_id="sepsis_lock", required_keys=("septic_shock",),
+                                      combination=Combination.OR, dwell_threshold=1)])
+    rules = DecisionRuleRegistry([
+        DecisionRule(decision_id="escalate", decision="ESCALATE", open_locks=("sepsis_lock",), priority=1,
+                     reasoning_template="{decision}"),
+        DecisionRule(decision_id="discharge", decision="DISCHARGE", closed_locks=("sepsis_lock",), priority=0,
+                     reasoning_template="{decision}"),
+    ])
+    keys = KeySet([Key(name="septic_shock", present=True, confidence=0.9)])
+    results = LockEvaluator(registry).evaluate_all("p1", keys, T0)
+    return DecisionEngine(rules, registry).decide("p1", keys, results, T0, test_only=True)
+
+
+@pytest.mark.parametrize("require_context", [False, True])
+def test_append_refuses_a_supplied_test_decision_and_records_nothing(require_context):
+    from delta import SuppliedTestDecisionRefused
+    d = supplied_test_decision()
+    assert d.provenance == "supplied-test"
+    calls = []
+    ledger = DecisionLedger(require_context=require_context, sink=calls.append)
+    head = ledger.chain_head
+    with pytest.raises(SuppliedTestDecisionRefused):
+        ledger.append(d, context=ctx_n(1))
+    assert ledger.entries == [] and ledger.chain_head == head and calls == []
+
+
+def test_the_file_store_never_sees_a_supplied_test_decision(tmp_path):
+    from delta import SuppliedTestDecisionRefused
+    store = FileLedgerStore(tmp_path / "led")
+    with pytest.raises(SuppliedTestDecisionRefused):
+        DecisionLedger(sink=store.sink).append(supplied_test_decision(), context=ctx_n(1))
+    path = tmp_path / "led" / LEDGER_FILE
+    assert not path.exists() or path.read_bytes() == b""
+
+
+def test_loading_an_export_that_holds_a_supplied_test_decision_is_refused():
+    from delta import SuppliedTestDecisionRefused
+    d = supplied_test_decision()
+    exported = recorded(engine_decision()).export()
+    # Put the supplied-test Decision where the evaluated one was. The refusal comes before any hash is checked.
+    exported["entries"][0]["decision"] = _decision_to_dict(d)
+    with pytest.raises(SuppliedTestDecisionRefused):
+        DecisionLedger.from_export(exported)
+
+
+def test_evaluated_and_unstamped_decisions_are_still_recorded():
+    for d in (engine_decision(), make_decision(0)):
+        assert len(recorded(d).entries) == 1

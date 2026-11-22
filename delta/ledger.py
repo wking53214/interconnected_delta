@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from types import FrameType
 from typing import Callable, List, Optional
 
-from beta import Decision
+from beta import PROVENANCE_SUPPLIED_TEST, Decision
 
 from .context import check_context
 
@@ -101,6 +101,20 @@ class StaleDecisionError(ValueError):
 
 class ContextRequiredError(ValueError):
     """This ledger requires every Decision to be recorded under a pipeline context, and none was given."""
+
+
+class SuppliedTestDecisionRefused(ValueError):
+    """The Decision is stamped provenance "supplied-test": beta decided from lock results a test handed it, not from
+    its own evaluation. beta says such a Decision must never be acted on or recorded, so delta refuses it on append
+    and on load."""
+
+
+def _refuse_supplied_test(decision: Decision, where: str = "") -> None:
+    if decision.provenance == PROVENANCE_SUPPLIED_TEST:
+        raise SuppliedTestDecisionRefused(
+            f"{where}delta does not record a Decision stamped provenance 'supplied-test' (beta decided it from lock "
+            "results a test supplied, not from its own evaluation); record a Decision from decide_from_keys"
+        )
 
 
 class LedgerCorruptError(ValueError):
@@ -273,6 +287,7 @@ def _entry_from_dict(i: int, raw: object, require_context: bool) -> LedgerEntry:
         Decision.validate(decision, check_fingerprint=require_context)
     except (ValueError, TypeError) as exc:
         raise ValueError(f"{where}: the Decision is not valid: {exc}") from exc
+    _refuse_supplied_test(decision, f"{where}: ")
     return LedgerEntry(
         audit_id=raw["audit_id"], timestamp=stamp, decision=decision, previous_hash=raw["previous_hash"],
         immutable_hash=raw["immutable_hash"], run_id=raw["run_id"], event_id=raw["event_id"],
@@ -365,6 +380,7 @@ class DecisionLedger:
         decision = dataclasses.replace(decision, **{name: tuple(getattr(decision, name)) for name in _TUPLE_FIELDS})
         _check_exact_types(decision, timestamp)
         Decision.validate(decision, check_fingerprint=context is not None)
+        _refuse_supplied_test(decision)
         with self._lock:
             return self._append_locked(decision, timestamp, context)
 
