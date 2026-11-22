@@ -6,7 +6,7 @@ requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
     "zeta @ git+https://github.com/wking53214/interconnected_zeta@97f789969299573f2fcdd3243ca9b6c8dbfc46be",
-    "beta @ git+https://github.com/wking53214/interconnected_beta@585d6017f891d6f947fd53ba28c51afa63985c64",
+    "beta @ git+https://github.com/wking53214/interconnected_beta@46d59a9eec82a4aa4d9c37ebee5e561f897151ea",
 ]
 
 [project.optional-dependencies]
