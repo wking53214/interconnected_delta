@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 
 from beta import Decision
 
+from .ledger import _refuse_supplied_test
 from .obligation import (
     MaturationRule,
     OutcomeObligation,
@@ -65,7 +66,13 @@ class DecisionObligationTracker:
     def open_for_decision(self, decision: Decision, domain: str, opened_at: float) -> Optional[OutcomeObligation]:
         """Open an obligation for this decision, if its decision_id has a
         registered maturation rule. Returns None (opens nothing) if not --
-        this is the expected, common case, not an error."""
+        this is the expected, common case, not an error.
+
+        A Decision stamped provenance "supplied-test" is refused with
+        SuppliedTestDecisionRefused before anything is looked up or opened,
+        whether or not its decision_id has a rule: beta says such a Decision
+        must never be acted on, and the ledger already refuses it."""
+        _refuse_supplied_test(decision, where="open_for_decision: ")
         rule = self.maturation_policy.get(decision.decision_id)
         if rule is None:
             return None
