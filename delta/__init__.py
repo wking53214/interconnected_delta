@@ -30,6 +30,7 @@ See each module's docstring for exactly what's extracted vs. new.
 
 from .store import CheckpointStore, FileLedgerStore, StoreCorruptError, StoreError, reconcile
 from .signing import receipt_signing_input, sign_receipt, verify_receipt_signature
+from .anchor import AnchorError, anchor_record, check_against_anchor, publish_checkpoint, read_anchor
 from .ledger import (
     ContextRequiredError,
     DecisionLedger,
@@ -99,6 +100,11 @@ __all__ = [
     "receipt_signing_input",
     "sign_receipt",
     "verify_receipt_signature",
+    "AnchorError",
+    "anchor_record",
+    "check_against_anchor",
+    "publish_checkpoint",
+    "read_anchor",
     "MaturationRule",
     "OutcomeObligation",
     "OutcomeIntegrityError",
