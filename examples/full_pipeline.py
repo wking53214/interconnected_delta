@@ -19,7 +19,7 @@ Run: PYTHONPATH=.:/path/to/zeta:/path/to/beta:/path/to/alpha python3 examples/fu
 
 from datetime import datetime, timedelta
 
-from zeta import Combination, LockEvaluator, LockRegistry, LockSpec
+from zeta import Combination, LockRegistry, LockSpec
 from alpha.packs.pediatric_vitals import VitalsObservation, observe
 from beta import Decision, DecisionEngine, DecisionRule, DecisionRuleRegistry
 
@@ -58,7 +58,6 @@ def example_1_pediatric_ledger():
                       reasoning_template="{decision}: vitals normal", instructions="Discharge with follow-up."),
     ])
 
-    lock_evaluator = LockEvaluator(lock_registry)
     decision_engine = DecisionEngine(decision_registry, lock_registry)
     ledger = DecisionLedger()
     obligations = DecisionObligationTracker()  # no maturation rules registered -- pediatric decisions resolve at discharge
@@ -66,8 +65,8 @@ def example_1_pediatric_ledger():
     t0 = datetime(2026, 10, 1, 8, 0, 0)
     vitals = VitalsObservation(heart_rate=148, oxygen_saturation=90.0, respiratory_rate=36, temperature=39.6, age_months=14)
     keys = observe(vitals)
-    lock_results = lock_evaluator.evaluate_all("patient_1", keys, t0)
-    decision = decision_engine.decide("patient_1", keys, lock_results, t0)
+    # beta evaluates the locks itself; it refuses lock results it did not evaluate.
+    decision = decision_engine.decide_from_keys("patient_1", keys, t0)
 
     entry = ledger.append(decision)
     print(f"\nDecision: {decision.decision}  (fingerprint {decision.decision_fingerprint[:12]}...)")

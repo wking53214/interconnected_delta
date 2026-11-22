@@ -120,9 +120,13 @@ class LedgerEntry:
     event_id: Optional[str] = None
 
 
+# beta's provenance fields: how the Decision was produced, and digests of what it rests on.
+_PROVENANCE_KEYS = ("provenance", "lock_results_digest", "prior_state_digest")
+
 _STR_FIELDS = (
     "entity_id", "decision_id", "decision", "decision_fingerprint", "reasoning", "instructions",
     "content_fingerprint", "keyset_fingerprint", "confidence_basis", "audit_hash",
+    "provenance", "lock_results_digest", "prior_state_digest",
 )
 
 
@@ -164,6 +168,12 @@ def _canonical_subset(
     # The Decision's ``audit_hash`` pointer, hashed only when set, so a Decision without one hashes exactly as before.
     if getattr(decision, "audit_hash", ""):
         subset["audit_hash"] = decision.audit_hash
+    # How beta produced the Decision ("evaluated" or "supplied-test") and the digests of the lock results and prior lock
+    # state it rests on. Each is hashed only when set, so a Decision without them hashes exactly as before, and a stored
+    # entry whose provenance stamp is stripped or changed no longer matches its chain hash.
+    for name in _PROVENANCE_KEYS:
+        if getattr(decision, name, ""):
+            subset[name] = getattr(decision, name)
     if run_id is not None:
         subset["run_id"] = run_id
     if event_id is not None:
@@ -193,9 +203,12 @@ def _decision_subset(entry_audit_id: str, timestamp: datetime, decision: Decisio
 EXPORT_SCHEMA = "ledger-export/1"
 _DECISION_STR_KEYS = (
     "entity_id", "decision_id", "decision", "decision_fingerprint", "audit_hash", "reasoning", "instructions",
-    "confidence_basis", "keyset_fingerprint", "content_fingerprint",
+    "confidence_basis", "keyset_fingerprint", "content_fingerprint", *_PROVENANCE_KEYS,
 )
 _DECISION_KEYS = frozenset(_DECISION_STR_KEYS) | {"timestamp", "confidence", *_TUPLE_FIELDS}
+# The shape written before beta recorded provenance. Still read, with the three fields empty: an entry whose Decision
+# had any of them set cannot pass as this shape, because _canonical_subset hashes them and the chain hash would differ.
+_LEGACY_DECISION_KEYS = _DECISION_KEYS - frozenset(_PROVENANCE_KEYS)
 _ENTRY_KEYS = frozenset({"audit_id", "timestamp", "previous_hash", "immutable_hash", "run_id", "event_id", "decision"})
 
 
@@ -236,11 +249,13 @@ def _entry_from_dict(i: int, raw: object, require_context: bool) -> LedgerEntry:
             raise ValueError(f"{where}: {name} must be a str or null")
     stamp = _parse_time(raw["timestamp"], f"{where}: timestamp")
     d = raw["decision"]
-    if type(d) is not dict or set(d) != _DECISION_KEYS:
+    if type(d) is not dict or set(d) not in (_DECISION_KEYS, _LEGACY_DECISION_KEYS):
         got = sorted(map(str, d)) if type(d) is dict else type(d).__name__
         raise ValueError(f"{where}: decision must be a dict with exactly the keys {sorted(_DECISION_KEYS)}; got {got}")
     fields: dict = {}
     for name in _DECISION_STR_KEYS:
+        if name not in d:  # the legacy shape: the Decision's defaults ("") stand
+            continue
         if type(d[name]) is not str:
             raise ValueError(f"{where}: decision.{name} must be a str; got {type(d[name]).__name__}")
         fields[name] = d[name]

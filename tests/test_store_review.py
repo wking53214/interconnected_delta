@@ -363,6 +363,11 @@ def test_f1_an_entry_without_an_audit_hash_hashes_exactly_as_before():
     subset = _canonical_subset("aid-0001", datetime(2026, 1, 1, 12, 0, 5), make_decision(0), "run-1", "ev-1")
     assert "audit_hash" not in subset
     got = hashlib.sha256((previous + _hash_dict(subset)).encode()).hexdigest()
+    assert got == "377ab8c56be0c0c06549698553b7872d03f9de2f0cb0865031ced9c4674635ec"
+    # The value above moved only because beta's content_fingerprint moved to beta-decision-content/2. With the /1
+    # fingerprint this Decision had before, delta's own hashing gives the value computed before the audit_hash change.
+    subset["content_fingerprint"] = "1b301e40a364eb898e29441714523f78f44f2fd900ca9b14e358fa6a76ba356c"
+    got = hashlib.sha256((previous + _hash_dict(subset)).encode()).hexdigest()
     assert got == "dc7dbb986127631ee5469f02596669092b624c854a61ace55cc6edc8c3fc39a8"  # computed before this change
 
 

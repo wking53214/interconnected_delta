@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from beta import Decision, DecisionEngine, DecisionRule, DecisionRuleRegistry
-from zeta import Combination, Key, KeySet, LockEvaluator, LockRegistry, LockSpec
+from zeta import Combination, Key, KeySet, LockRegistry, LockSpec
 
 if os.environ.get("DELTA_REQUIRE_CNS") == "1":  # CI: a missing cns is a failure, not a skip
     import cns.gate as gate
@@ -53,9 +53,12 @@ def rules():
 
 def decide(present, entity_id="patient1", when=T0):
     registry = lock_registry()
-    keys = KeySet([Key(name=name, present=True, confidence=conf) for name, conf in present])
-    results = LockEvaluator(registry).evaluate_all(entity_id, keys, when)
-    return DecisionEngine(rules(), registry).decide(entity_id, keys, results, when)
+    found = dict(present)
+    # Every required Key is reported, absent ones with present=False: beta refuses a KeySet that leaves one unchecked.
+    names = sorted({name for spec in registry.all() for name in spec.required_keys} | set(found))
+    keys = KeySet([Key(name=n, present=n in found, confidence=found.get(n, 0.0)) for n in names])
+    # The engine evaluates the KeySet itself: beta refuses hand-fed lock results outside its test mode.
+    return DecisionEngine(rules(), registry).decide_from_keys(entity_id, keys, when)
 
 
 @pytest.fixture
@@ -194,6 +197,9 @@ DECISION_CHANGES = {
     "instructions": "Do something else.",
     "keyset_fingerprint": "a" * 64,
     "content_fingerprint": "c" * 64,
+    "provenance": "",
+    "lock_results_digest": "f" * 64,
+    "prior_state_digest": "f" * 64,
 }
 DECISION_NOT_BOUND = {"audit_hash", "confidence_basis"}
 
@@ -201,7 +207,7 @@ DECISION_NOT_BOUND = {"audit_hash", "confidence_basis"}
 def test_every_entry_and_decision_field_is_either_bound_or_deliberately_not():
     assert {f.name for f in dataclasses.fields(LedgerEntry)} == set(ENTRY_CHANGES) | {"decision"}
     assert {f.name for f in dataclasses.fields(Decision)} == set(DECISION_CHANGES) | DECISION_NOT_BOUND
-    content = entry_content(LedgerEntry("a", T0, Decision("e", "d", "x", T0, 1.0, keyset_fingerprint="b" * 64, content_fingerprint="c" * 64), "p", "h", "run-1", "ev-1"))
+    content = entry_content(LedgerEntry("a", T0, Decision("e", "d", "x", T0, 1.0, keyset_fingerprint="b" * 64, content_fingerprint="c" * 64, provenance="evaluated", lock_results_digest="d" * 64, prior_state_digest="e" * 64), "p", "h", "run-1", "ev-1"))
     assert set(content) == set(ENTRY_CHANGES) | {"decision"}
     assert set(content["decision"]) == set(DECISION_CHANGES)
 

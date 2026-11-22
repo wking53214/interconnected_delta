@@ -186,6 +186,15 @@ def _decision_content(decision: Any) -> Dict[str, Any]:
         content["keyset_fingerprint"] = check_digest(decision.keyset_fingerprint, "Decision.keyset_fingerprint")
     if getattr(decision, "content_fingerprint", ""):
         content["content_fingerprint"] = check_digest(decision.content_fingerprint, "Decision.content_fingerprint")
+    # How beta produced the Decision, and the digests of what it rests on: present only when set, so a verdict about a
+    # Decision without them binds exactly as before.
+    if getattr(decision, "provenance", ""):
+        if type(decision.provenance) is not str:
+            raise TypeError(f"Decision.provenance must be a str; got {type(decision.provenance).__name__}")
+        content["provenance"] = decision.provenance
+    for name in ("lock_results_digest", "prior_state_digest"):
+        if getattr(decision, name, ""):
+            content[name] = check_digest(getattr(decision, name), f"Decision.{name}")
     return content
 
 
