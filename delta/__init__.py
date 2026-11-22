@@ -37,6 +37,7 @@ from .ledger import (
     LedgerCheckpoint,
     LedgerCorruptError,
     LedgerEntry,
+    SuppliedTestDecisionRefused,
     StaleDecisionError,
     verify_export,
 )
@@ -83,6 +84,7 @@ from .fairness import (
 __all__ = [
     "DecisionLedger",
     "ContextRequiredError",
+    "SuppliedTestDecisionRefused",
     "DuplicateRecordError",
     "LedgerCorruptError",
     "StaleDecisionError",
