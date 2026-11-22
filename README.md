@@ -5,14 +5,14 @@ Records `beta.Decision`s in a hash-chained ledger, tracks outcome obligations, s
 ## Role Within ≡TACK
 
 - **What it is.** The custody stage of the small reference spine: a hash-chained ledger of `beta.Decision`s, outcome obligations, and a four-fifths cohort screen.
-- **Authority matrix.** Evidence generation (the chain, exports, receipts) and evidence verification of its own chain (`verify_chain_integrity`, `verify_export`, `reconcile`). It does not define policy, enforce, authorize or authenticate. Signing is a hook only (`delta.signing`), so no signatures are made here.
+- **Authority matrix.** Evidence generation (the chain, exports, receipts) and evidence verification of its own chain (`verify_chain_integrity`, `verify_export`, `reconcile`). It does not define policy, enforce, authorize or authenticate. Signing is a hook only (`delta.signing`), so no signatures are made here; signed checkpoints can be published to an outside anchor (`delta.anchor`).
 - **Owns.** The ledger, the file store and checkpoint store, obligations and the fairness screen.
 - **Does not own.** Detection (alpha), locks (zeta), decisions (beta), the orchestrator's own ledgers, production custody (sentinel_os), or independent observation of outcomes.
 - **Depends on.** `zeta` and `beta`, pinned by git commit. CNS is optional.
 - **Depended on by.** UNKNOWN (not inspected here).
 - **Fail behavior.** Closed on bad input and on a corrupt head (`LedgerCorruptError`). Weaker where stated below: tamper evidence needs a checkpoint held outside the writer's reach, `load` drops and reports a torn final line (`recovered_tail`) rather than refusing, and `resolve()` trusts the caller's resolved value and provenance string.
 
-Status: library, version 0.1.0. EXECUTED 2026-11-17 at `78bb3e7`, Python 3.13, in a fresh environment: `pip install -e ".[dev]" cryptography` then `pytest` gives 363 passed, 12 skipped (the twelve need CNS). With the `cns` extra installed and `DELTA_REQUIRE_CNS=1`, which is how CI's second job runs, 661 passed and none skipped. Not run: GitHub CI, Python 3.10 to 3.12, an OS-crash or power-loss test.
+Status: library, version 0.1.0. EXECUTED 2026-11-17 at `78bb3e7`, Python 3.13, in a fresh environment: `pip install -e ".[dev]" cryptography` then `pytest` gives 363 passed, 12 skipped (the twelve need CNS). With the `cns` extra installed and `DELTA_REQUIRE_CNS=1`, which is how CI's second job runs, 661 passed and none skipped. Not run: GitHub CI, Python 3.10 to 3.12, an OS-crash or power-loss test. On branch `delta/anchor-signed-checkpoints` (2026-11-22, Python 3.13, beta `9cabc93`, zeta `0ab30b2`, CNS installed, `DELTA_REQUIRE_CNS=1`): 722 passed (EXECUTED).
 
 ## 1. Pipeline Position & Role
 
@@ -114,7 +114,55 @@ Key custody, trust, rotation and revocation belong to the deployer's `sign` and 
 
 A checkpoint can be signed the same way (`CheckpointStore.write(cp, sign=...)`, `read(verify=...)`, domain tag `delta-ledger-checkpoint-signature/1\n`). That signature has the same limits and one more: it carries no freshness, so an old validly signed checkpoint is still validly signed: **a signed checkpoint presented later reports `UNWITNESSED_TAIL`, not an error.** If the tail after it was rewritten, `reconcile` calls the rewritten entries unwitnessed rather than detecting a rollback, because the old checkpoint still matches the prefix. Forward-only is enforced by `CheckpointStore.write` (across store objects only through its lock file), which anyone with file access can bypass. Replacing a sound stored checkpoint also needs `history=` (the ledger the new checkpoint was taken from): a checkpoint carries only a length and a head, so the store cannot tell a rebuilt ledger from an honest one, and without `history` the write is refused.
 
-**Closing the freshness gap from outside (the deployer's part, not code).** Delta has no clock and no memory outside the files it is given, so it cannot tell that a package is old. The recipe: keep the newest checkpoint in storage the producer cannot rewrite (another account or machine, an append-only log, a record in a ticket), and give the verifier THAT checkpoint, not the one that arrived with the package: `verify_export(data, checkpoint=newest)`. An older package, even validly signed and cut back to match its own checkpoint, then fails because the newest checkpoint names history the older ledger does not contain (`tests/test_freshness_recipe.py` runs this). Update the held checkpoint only forward, with `CheckpointStore.write(cp, history=ledger)`. If a third party must be able to check you, also publish the newest head and its length with a date somewhere you cannot edit afterwards: that is what makes "newest" something other than your own claim. A package ahead of the held checkpoint verifies, and the entries after it stay unwitnessed.
+**Closing the freshness gap from outside (the deployer's part, not code).** Delta has no clock and no memory outside the files it is given, so it cannot tell that a package is old. The recipe: keep the newest checkpoint in storage the producer cannot rewrite (another account or machine, an append-only log, a record in a ticket), and give the verifier THAT checkpoint, not the one that arrived with the package: `verify_export(data, checkpoint=newest)`. An older package, even validly signed and cut back to match its own checkpoint, then fails because the newest checkpoint names history the older ledger does not contain (`tests/test_freshness_recipe.py` runs this). Update the held checkpoint only forward, with `CheckpointStore.write(cp, history=ledger)`. If a third party must be able to check you, also publish the newest head and its length with a date somewhere you cannot edit afterwards: that is what makes "newest" something other than your own claim. A package ahead of the held checkpoint verifies, and the entries after it stay unwitnessed. `delta.anchor` (next section) is the code for that publishing step.
+
+### Outside anchor (signed checkpoints in a protected repository)
+
+`delta.anchor` publishes signed checkpoints, one file each, into a local clone of a **separate, protected git
+repository**, and checks a ledger against everything published there. Only `schema`, `length`, `head` and `signature`
+are published: never a Decision, an entry or any data. The signature is over the same bytes `CheckpointStore` signs, so
+one key and one verifier serve both. delta holds no key and runs no git.
+
+- **`publish_checkpoint(anchor, checkpoint, *, sign, verify, history=None)`** writes
+  `checkpoints/<length, 20 digits>.json` (canonical JSON, one line). It first reads and checks everything already
+  published; refuses a lower length, a fork (the same length with another head), a signer the verifier rejects, and a
+  checkpoint that does not extend the newest published one (`history`, the ledger it came from, must hold the newest
+  published head at its length, so a ledger rebuilt after losing entries cannot publish past them). The same checkpoint
+  again is a no-op. A file is created once with `os.link` and never replaced. The first publish needs no `history`.
+- **`read_anchor(anchor, *, verify)`** returns every published checkpoint, oldest first. `verify` is required: only
+  signed checkpoints count. A bad name, an extra key, a non-canonical file or a bad signature is an `AnchorError`
+  naming the file. Names starting with a dot are ignored.
+- **`check_against_anchor(ledger, anchor, *, verify)`** compares a ledger with every published checkpoint: `OK`,
+  `UNWITNESSED_TAIL` (entries after the newest published one, with the count), `LOST` (the anchor witnessed entries the
+  ledger no longer has), `DIVERGED` (the chain does not verify, or a witnessed entry was rewritten; `first_diverged`
+  names the length) or `NO_ANCHOR`. For an export, rebuild it with `DecisionLedger.from_export` first.
+
+**Operator steps (not code).**
+
+1. Create a separate GitHub repository for the anchor (for example `<ledger>-anchor`). It holds nothing but
+   `checkpoints/`.
+2. Protect its main branch with a ruleset: block force pushes, block deletions, and allow no bypass. **The ledger
+   writer's account must not be an admin of the anchor repository**, because an admin can lift the protection. Push
+   with an account or deploy key that can add commits and nothing more.
+3. After recording, in a clone of the anchor: `publish_checkpoint(clone, ledger.checkpoint(), sign=..., verify=...,
+   history=ledger)`, then `git add checkpoints && git commit && git push`. A rejected push means the remote moved;
+   pull, then publish again (a fork is refused, not merged).
+4. To verify, make a **fresh clone of the remote** (never the writer's clone) and run `check_against_anchor`. Anything
+   but `OK` or an expected `UNWITNESSED_TAIL` means the ledger lost or rewrote history the anchor witnessed.
+
+**Limits, plainly.** The anchor is only as strong as its protection: whoever can turn the branch rules off, or holds
+the anchor repository's admin rights, can rewrite it. The repository owner is still one party, and commit dates are set
+by whoever commits, so they prove nothing about time. A key holder can sign and publish any checkpoint; the anchor makes
+a published one hard to take back, it does not make the key holder honest. Signing keys stay in-process (see Signing);
+a separate signer process is the next step.
+
+**Long-term plan.** Move the anchor to a public transparency log, similar to Sigstore's Rekor: an append-only log run
+by a third party, with inclusion and consistency proofs and a timestamp the log signs, so neither the ledger's writer
+nor the anchor repository's owner can rewrite or back-date what was published.
+
+**Signed lock results upstream.** beta at `9cabc93` can refuse unsigned or badly signed zeta lock results when a
+checker is plugged in (see interconnected_beta's README). zeta, beta and delta keep their own copies of one set of
+signing rules; `tests/test_signing_rules_shared.py` reads all three and checks they agree byte for byte.
 
 ### Durable store
 
@@ -179,6 +227,7 @@ Four-fifths screening on **weighted** group distributions. Cohort size uses **in
 | Fairness inputs | `group_distribution` must be supplied by the caller. δ does not estimate race/ethnicity (that's sentinel_os `bisg_estimator`, and even that is a proxy). |
 | `MIN_COHORT_SIZE_FOR_STATISTICAL_TEST` / `FOUR_FIFTHS_THRESHOLD` | Named constants. Four-fifths is the regulatory 0.8; cohort minimum is a tunable. |
 | No independent twin | sentinel_os twin is not ported. |
+| Outside anchor is a repository, not a log | `delta.anchor` publishes signed checkpoints to a protected git repository. Its protection depends on branch rules and admin rights the operator sets up; the owner can still rewrite it, and commit dates are not evidence of time. A public transparency log (like Sigstore's Rekor) is the long-term plan. |
 | Actor self-report | Not used as ground truth here, but δ also does not independently observe outcomes, `resolve()` trusts caller-supplied `resolved_value` + `provenance` string. |
 
 ## 5. Core Invariants & Guarantees
