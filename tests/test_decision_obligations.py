@@ -1,3 +1,4 @@
+import dataclasses
 import threading
 from datetime import datetime
 
@@ -165,3 +166,27 @@ def test_returned_obligations_do_not_alias_tracker_state():
 
     tracker.all()[0].detail["x"] = 1
     assert "x" not in tracker.get(opened.obligation_id).detail
+
+
+# --- beta's provenance stamp: a supplied-test Decision opens nothing ---
+
+def test_a_supplied_test_decision_is_refused_and_opens_nothing():
+    from beta import PROVENANCE_SUPPLIED_TEST
+    from delta import SuppliedTestDecisionRefused
+    tracker = DecisionObligationTracker({"loan_approve": MaturationRule(kind="loan_performance", horizon_seconds=DAY)})
+    stamped = dataclasses.replace(make_decision(), provenance=PROVENANCE_SUPPLIED_TEST)
+    with pytest.raises(SuppliedTestDecisionRefused):
+        tracker.open_for_decision(stamped, domain="lending", opened_at=0.0)
+    assert tracker.all() == []
+    # A Decision with no registered rule is refused too: the stamp is checked first.
+    with pytest.raises(SuppliedTestDecisionRefused):
+        tracker.open_for_decision(dataclasses.replace(stamped, decision_id="ivr_call_end"), domain="ivr", opened_at=0.0)
+
+
+def test_evaluated_and_unstamped_decisions_open_as_before():
+    from beta import PROVENANCE_EVALUATED
+    tracker = DecisionObligationTracker({"loan_approve": MaturationRule(kind="loan_performance", horizon_seconds=DAY)})
+    assert tracker.open_for_decision(make_decision(fp="fp-legacy"), domain="lending", opened_at=0.0) is not None
+    evaluated = dataclasses.replace(make_decision(fp="fp-evaluated"), provenance=PROVENANCE_EVALUATED)
+    assert tracker.open_for_decision(evaluated, domain="lending", opened_at=0.0) is not None
+    assert len(tracker.all()) == 2
