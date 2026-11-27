@@ -5,15 +5,15 @@ description = "Records beta.Decisions in a hash-chained ledger, tracks outcome o
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "zeta @ git+https://github.com/wking53214/interconnected_zeta@0ab30b284f4bf73eb94b9425bafd95f1f7829f50",
-    "beta @ git+https://github.com/wking53214/interconnected_beta@9cabc93f17432d2537528f8c7410a5d38104c9c2",
+    "zeta @ git+https://github.com/wking53214/interconnected_zeta@3ab587ac157e78394bb0fdc646ec9948ea9bb6ee",
+    "beta @ git+https://github.com/wking53214/interconnected_beta@af994334724692fd1cb1736fbf6496819e2f8511",
 ]
 
 [project.optional-dependencies]
 # cryptography is not declared here: CI installs it directly for the tests' Ed25519 fixtures (the spine policy forbids it in an extra).
 dev = ["pytest>=7.0"]
 # Optional: lets a LedgerEntry or OutcomeObligation be bound to a CNS verdict (delta.cns_connector). Nothing in delta imports CNS otherwise.
-cns = ["cns @ git+https://github.com/wking53214/CNS.git@v4.1.0"]
+cns = ["cns @ git+https://github.com/wking53214/CNS.git@v4.2.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
